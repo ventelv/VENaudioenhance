@@ -97,7 +97,6 @@ struct ven_live {
     double fill_avg;
     double adjust;
     _Atomic int in_burst;       // largest input callback seen
-    int out_burst;              // largest output callback seen
 
     _Atomic int taps_on, monitor_on;
     ven_ring *raw_tap, *enh_tap, *monitor;
@@ -199,9 +198,8 @@ static int make_block(ven_live *l) {
     int avail = ven_ring_available(l->in_ring);
     int needed = ven_resampler_input_needed(l->rs, VEN_BLOCK);
     if (!l->primed) {
-        double step = l->in_rate / VEN_SAMPLE_RATE;
-        int out_blocks = (l->out_burst + VEN_BLOCK - 1) / VEN_BLOCK;
-        l->target_fill = atomic_load(&l->in_burst) + out_blocks * VEN_BLOCK * step + 0.002 * l->in_rate;
+        // Between two blocks at least one input burst arrives, so one burst plus a margin is enough.
+        l->target_fill = atomic_load(&l->in_burst) + 0.003 * l->in_rate;
         if (avail < needed + l->target_fill) return 0;
         l->primed = 1;
         l->fill_avg = l->target_fill;
@@ -247,7 +245,6 @@ static int make_block(ven_live *l) {
 OSStatus ven_live_output_proc(void *refCon, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts,
                               UInt32 bus, UInt32 frames, AudioBufferList *io) {
     ven_live *l = refCon;
-    if ((int)frames > l->out_burst) l->out_burst = (int)frames;
     float *out0 = io->mBuffers[0].mData;
     UInt32 done = 0;
     while (done < frames) {

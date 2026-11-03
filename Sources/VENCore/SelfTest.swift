@@ -262,4 +262,23 @@ public enum SelfTest {
         for i in 24000..<(x.count - latency) { maxErr = max(maxErr, abs(y[i + latency] - x[i])) }
         return Result(name: "Bypass is the input, latency-matched", passed: maxErr < 1e-5, detail: String(format: "max error %.2g", maxErr))
     }
+
+    /// Turns a clean speech file into a realistic bad recording: hum, room noise, a quiet second half and a long pause.
+    public static func makeDegradedDemo(speech: URL, output: URL) throws {
+        let clean = try AudioIO.read(speech)
+        let x = clean.array(0)
+        let half = x.count / 2
+        var y = Array(x[..<half]).map { $0 * 0.5 }
+        y += [Float](repeating: 0, count: 48000 * 3)                 // 3 s pause
+        y += Array(x[half...]).map { $0 * 0.5 * 0.25 }              // second half 12 dB quieter
+        let secs = Double(y.count) / 48000
+        var hum = sine(60, amplitude: 0.006, seconds: secs)
+        for k in 2...6 { hum = mixed(hum, sine(60 * Double(k), amplitude: 0.004 / Double(k), seconds: secs)) }
+        // Brown-ish room noise.
+        var n = noise(0.02, count: y.count, seed: 7)
+        var lp: Float = 0
+        for i in n.indices { lp = 0.97 * lp + 0.03 * n[i]; n[i] = lp * 2 + n[i] * 0.05 }
+        y = mixed(mixed(y, hum), n)
+        try AudioIO.write(PlanarBuffer([y]), to: output, format: .wav24)
+    }
 }
