@@ -46,6 +46,9 @@ public enum AudioIO {
 
     /// Decodes a file to planar float at `rate` Hz, keeping up to two channels (more are folded to stereo).
     public static func read(_ url: URL, rate: Double = 48000) throws -> PlanarBuffer {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw AudioIOError(message: "No such file: \(url.path)")
+        }
         let file: AVAudioFile
         do {
             file = try AVAudioFile(forReading: url)
