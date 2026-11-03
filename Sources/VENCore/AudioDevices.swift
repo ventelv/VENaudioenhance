@@ -108,8 +108,13 @@ public enum AudioDevices {
             default: return 2
             }
         }
+        // Among equals, a dedicated mic beats one built into a display, camera or phone.
+        func score(_ d: AudioDevice) -> Int {
+            let secondary = ["display", "camera", "webcam", "iphone", "ipad"].contains { d.name.lowercased().contains($0) }
+            return rank(d) * 2 + (secondary ? 0 : 1)
+        }
         let fallback = candidates.first { $0.id == defaultInput() && !$0.isVirtual }
-        return candidates.max { rank($0) < rank($1) } ?? fallback
+        return candidates.max { score($0) < score($1) } ?? fallback
     }
 
     /// Number of apps other than VEN currently recording from the virtual mic.
@@ -119,6 +124,10 @@ public enum AudioDevices {
         var size = UInt32(MemoryLayout<Unmanaged<CFPropertyList>?>.size)
         guard AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &value) == noErr, let value else { return 0 }
         return (value.takeRetainedValue() as? NSNumber)?.intValue ?? 0
+    }
+
+    public static func isRunningSomewhere(_ device: AudioDeviceID) -> Bool {
+        get(device, kAudioDevicePropertyDeviceIsRunningSomewhere, default: UInt32(0)) != 0
     }
 
     public static func setBufferSize(_ device: AudioDeviceID, frames: UInt32) {

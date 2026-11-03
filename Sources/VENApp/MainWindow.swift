@@ -1,0 +1,371 @@
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+import VENCore
+
+struct MainWindow: View {
+    @State private var tab = "master"
+
+    var body: some View {
+        TabView(selection: $tab) {
+            MasteringTab().tabItem { Label("File Mastering", systemImage: "waveform.badge.magnifyingglass") }.tag("master")
+            LiveTab().tabItem { Label("Live Mic", systemImage: "mic") }.tag("live")
+            SetupTab().tabItem { Label("Setup", systemImage: "gearshape") }.tag("setup")
+        }
+        .padding()
+    }
+}
+
+// MARK: - Live
+
+struct LiveTab: View {
+    @EnvironmentObject var live: LiveController
+
+    var body: some View {
+        HSplitView {
+            Form {
+                Section {
+                    MicPicker()
+                    if let mic = live.selectedInput, mic.inputChannels > 1 {
+                        Picker("Channel", selection: $live.inputChannel) {
+                            Text("Mix all channels").tag(-1)
+                            ForEach(0..<mic.inputChannels, id: \.self) { Text("Channel \($0 + 1)").tag($0) }
+                        }
+                    }
+                    Picker("Run", selection: $live.mode) {
+                        ForEach(LiveController.Mode.allCases) { Text($0.label).tag($0) }
+                    }
+                    PresetChips()
+                }
+                Section("Cleanup") {
+                    StageToggle("Rumble filter", isOn: $live.settings.highPassEnabled) {
+                        SliderRow(value: $live.settings.highPassHz, range: 40...200, format: "%.0f Hz")
+                    }
+                    Picker("Hum removal", selection: $live.settings.humMode) {
+                        ForEach(VoiceSettings.HumMode.allCases) { Text($0.label).tag($0) }
+                    }
+                    StageToggle("Noise reduction", isOn: $live.settings.noiseReductionEnabled) {
+                        SliderRow(value: $live.settings.noiseReductionStrength, range: 0...1, format: "%.0f%%", scale: 100)
+                    }
+                    StageToggle("Pause gate", isOn: $live.settings.pauseGateEnabled) {
+                        SliderRow(value: $live.settings.pauseGateDepthDB, range: 3...30, format: "−%.0f dB")
+                    }
+                }
+                Section("Tone") {
+                    StageToggle("Voice EQ", isOn: $live.settings.voiceEQEnabled) {
+                        SliderRow(value: $live.settings.voiceEQAmount, range: 0...1, format: "%.0f%%", scale: 100)
+                    }
+                    StageToggle("De-esser", isOn: $live.settings.deEsserEnabled) {
+                        SliderRow(value: $live.settings.deEsserAmount, range: 0...1, format: "%.0f%%", scale: 100)
+                    }
+                }
+                Section("Level") {
+                    StageToggle("Leveler", isOn: $live.settings.levelerEnabled) {
+                        SliderRow(value: $live.settings.levelerTargetDB, range: -30 ... -12, format: "%.0f dBFS")
+                        SliderRow(value: $live.settings.levelerMaxGainDB, range: 0...24, format: "max +%.0f dB")
+                    }
+                    StageToggle("Compressor", isOn: $live.settings.compressorEnabled) {
+                        SliderRow(value: $live.settings.compressorAmount, range: 0...1, format: "%.0f%%", scale: 100)
+                    }
+                    StageToggle("Limiter", isOn: $live.settings.limiterEnabled) {
+                        SliderRow(value: $live.settings.limiterCeilingDB, range: -6...0, format: "%.1f dBTP")
+                    }
+                    SliderRow(label: "Output gain", value: $live.settings.outputGainDB, range: -12...12, format: "%+.1f dB")
+                }
+            }
+            .formStyle(.grouped)
+            .frame(minWidth: 420)
+            .onChange(of: live.settings) { _ in
+                if let preset = VoicePreset.all.first(where: { $0.id == live.presetID }), !sameIgnoringToggles(preset.settings, live.settings) {
+                    live.presetID = nil
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                StatusPill(status: live.status, muted: live.settings.mute)
+                statusText
+                LiveMeters()
+                Toggle("Enhance (turn off to compare with the raw mic)",
+                       isOn: Binding(get: { !live.settings.bypass }, set: { live.settings.bypass = !$0 }))
+                HStack {
+                    HoldToMuteButton()
+                    Button(live.recordingSince == nil ? "Record raw + enhanced" : "Stop recording") { live.toggleRecording() }
+                }
+                Text("Pick **VEN Enhanced Mic** as the microphone in Zoom, QuickTime, OBS, GarageBand or any other app. With “When an app uses it”, VEN only opens your real mic while something is recording.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+            }
+            .padding()
+            .frame(minWidth: 280)
+        }
+    }
+
+    @ViewBuilder private var statusText: some View {
+        switch live.status {
+        case .running(let mic): Text("Enhancing \(mic)")
+        case .waiting: Text("Waiting for an app to use VEN Enhanced Mic")
+        case .off: Text("Live enhancement is off")
+        case .driverMissing: Text("VEN Enhanced Mic isn't installed — see Setup")
+        case .noMicrophone: Text("No microphone found")
+        case .failed(let msg): Text(msg).foregroundStyle(.red)
+        }
+    }
+
+    private func sameIgnoringToggles(_ a: VoiceSettings, _ b: VoiceSettings) -> Bool {
+        var a = a, b = b
+        a.bypass = false; b.bypass = false
+        a.mute = false; b.mute = false
+        return a == b
+    }
+}
+
+struct StageToggle<Content: View>: View {
+    let title: String
+    @Binding var isOn: Bool
+    @ViewBuilder let content: Content
+
+    init(_ title: String, isOn: Binding<Bool>, @ViewBuilder content: () -> Content) {
+        self.title = title
+        _isOn = isOn
+        self.content = content()
+    }
+
+    var body: some View {
+        Toggle(title, isOn: $isOn)
+        if isOn { content }
+    }
+}
+
+struct SliderRow: View {
+    var label: String? = nil
+    @Binding var value: Float
+    let range: ClosedRange<Float>
+    let format: String
+    var scale: Float = 1
+
+    var body: some View {
+        HStack {
+            if let label { Text(label) }
+            Slider(value: $value, in: range)
+            Text(String(format: format, value * scale)).monospacedDigit().foregroundStyle(.secondary).frame(width: 82, alignment: .trailing)
+        }
+    }
+}
+
+// MARK: - Mastering
+
+struct MasteringTab: View {
+    @EnvironmentObject var queue: MasteringQueue
+    @State private var dropTargeted = false
+
+    var body: some View {
+        HSplitView {
+            VStack(spacing: 12) {
+                dropZone
+                jobList
+            }
+            .padding(.trailing, 8)
+            .frame(minWidth: 380)
+
+            MasteringSettingsForm()
+                .frame(minWidth: 320, idealWidth: 340)
+        }
+    }
+
+    private var dropZone: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "square.and.arrow.down.on.square").font(.system(size: 30)).foregroundStyle(.secondary)
+            Text("Drop recordings here").font(.headline)
+            Text("Noise & hum removal, AutoEQ, leveling, loudness to \(String(format: "%.0f", queue.settings.loudnessTarget)) LUFS")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("Choose Files…") { chooseFiles() }
+        }
+        .frame(maxWidth: .infinity, minHeight: 150)
+        .background(RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [6]))
+            .foregroundStyle(dropTargeted ? Color.accentColor : Color.secondary.opacity(0.4)))
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            for p in providers {
+                _ = p.loadObject(ofClass: URL.self) { url, _ in
+                    if let url { Task { @MainActor in queue.add([url]) } }
+                }
+            }
+            return true
+        }
+    }
+
+    private var jobList: some View {
+        VStack(alignment: .leading) {
+            HStack {
+                Text("Queue").font(.headline)
+                Spacer()
+                if !queue.jobs.isEmpty { Button("Clear finished") { queue.clearFinished() }.buttonStyle(.link) }
+            }
+            if queue.jobs.isEmpty {
+                Text("Nothing processed yet.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(queue.jobs.reversed()) { job in JobRow(job: job) }
+                    .listStyle(.inset(alternatesRowBackgrounds: true))
+            }
+        }
+    }
+
+    private func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.audio, .movie]
+        if panel.runModal() == .OK { queue.add(panel.urls) }
+    }
+}
+
+struct JobRow: View {
+    let job: MasteringQueue.Job
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(job.input.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                Spacer()
+                if case .done = job.state, let out = job.output {
+                    Button { NSWorkspace.shared.activateFileViewerSelecting([out]) } label: { Image(systemName: "magnifyingglass") }
+                        .buttonStyle(.borderless).help("Show in Finder")
+                }
+            }
+            switch job.state {
+            case .queued: Text("Waiting").font(.caption).foregroundStyle(.secondary)
+            case .running(let f, let stage):
+                ProgressView(value: f) { Text(stage).font(.caption) }
+            case .done(let summary):
+                Label(summary, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+            case .failed(let msg):
+                Label(msg, systemImage: "xmark.octagon.fill").font(.caption).foregroundStyle(.red)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+struct MasteringSettingsForm: View {
+    @EnvironmentObject var queue: MasteringQueue
+
+    var body: some View {
+        Form {
+            Section("Output") {
+                Picker("Loudness", selection: $queue.settings.loudnessTarget) {
+                    ForEach(MasteringSettings.loudnessTargets, id: \.value) { Text($0.label).tag($0.value) }
+                }
+                Picker("Format", selection: $queue.settings.format) {
+                    ForEach(ExportFormat.allCases) { f in
+                        Text(f.isAvailable ? f.label : "\(f.label) — brew install lame").tag(f)
+                    }
+                }
+                Picker("Sample rate", selection: $queue.settings.outputRate) {
+                    Text("48 kHz").tag(48000.0)
+                    Text("44.1 kHz").tag(44100.0)
+                }
+                Picker("Channels", selection: $queue.settings.channels) {
+                    ForEach(MasteringSettings.Channels.allCases) { Text($0.label).tag($0) }
+                }
+                FolderRow(title: "Save to", url: $queue.outputFolder, placeholder: "Next to the original")
+            }
+            Section("Cleanup") {
+                Toggle("Noise reduction", isOn: $queue.settings.noiseReduction)
+                if queue.settings.noiseReduction {
+                    SliderRow(value: $queue.settings.noiseStrength, range: 0...1, format: "%.0f%%", scale: 100)
+                }
+                Picker("Hum removal", selection: $queue.settings.humMode) {
+                    ForEach(VoiceSettings.HumMode.allCases) { Text($0.label).tag($0) }
+                }
+                Toggle("Rumble filter", isOn: $queue.settings.highPass)
+                Toggle("Breath reduction", isOn: $queue.settings.breathReduction)
+            }
+            Section("Tone & level") {
+                Toggle("AutoEQ", isOn: $queue.settings.autoEQ)
+                Toggle("De-esser", isOn: $queue.settings.deEsser)
+                Toggle("Adaptive leveler", isOn: $queue.settings.leveler)
+                if queue.settings.leveler {
+                    SliderRow(value: $queue.settings.levelerStrength, range: 0...1, format: "%.0f%%", scale: 100)
+                }
+                SliderRow(label: "Compression", value: $queue.settings.compressorAmount, range: 0...1, format: "%.0f%%", scale: 100)
+                Picker("True peak limit", selection: $queue.settings.truePeakLimit) {
+                    Text("−1 dBTP").tag(-1.0)
+                    Text("−2 dBTP").tag(-2.0)
+                    Text("−0.5 dBTP").tag(-0.5)
+                }
+            }
+            Section("Cutting") {
+                Toggle("Shorten long pauses", isOn: $queue.settings.cutSilence)
+                if queue.settings.cutSilence {
+                    Stepper(value: $queue.settings.maxPauseSeconds, in: 0.3...3, step: 0.1) {
+                        Text(String(format: "Keep at most %.1f s", queue.settings.maxPauseSeconds))
+                    }
+                }
+            }
+            Section("Watch folder") {
+                FolderRow(title: "Auto-process", url: $queue.watchFolder, placeholder: "Off")
+                Text("New recordings that appear in this folder are mastered automatically with these settings.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+struct FolderRow: View {
+    let title: String
+    @Binding var url: URL?
+    let placeholder: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(url?.lastPathComponent ?? placeholder).foregroundStyle(.secondary).lineLimit(1)
+            Button("Choose…") {
+                let panel = NSOpenPanel()
+                panel.canChooseDirectories = true
+                panel.canChooseFiles = false
+                panel.canCreateDirectories = true
+                if panel.runModal() == .OK { url = panel.url }
+            }
+            if url != nil { Button { url = nil } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.borderless) }
+        }
+    }
+}
+
+// MARK: - Setup
+
+struct SetupTab: View {
+    @EnvironmentObject var live: LiveController
+    @EnvironmentObject var system: SystemSupport
+
+    var body: some View {
+        Form {
+            Section("Virtual microphone") {
+                HStack {
+                    Image(systemName: live.status == .driverMissing ? "xmark.circle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(live.status == .driverMissing ? .orange : .green)
+                    Text(live.status == .driverMissing ? "VEN Enhanced Mic is not installed" : "VEN Enhanced Mic is installed")
+                    Spacer()
+                    Button(live.status == .driverMissing ? "Install…" : "Reinstall…") { system.installDriver() }
+                }
+                if let msg = system.installMessage { Text(msg).font(.caption).foregroundStyle(.secondary) }
+                Text("To remove it later: run scripts/uninstall-driver.sh from the project folder.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("General") {
+                Toggle("Open at login", isOn: Binding(get: { system.launchAtLogin }, set: { system.setLaunchAtLogin($0) }))
+                LabeledContent("Cough key", value: "Hold ⌃⌥C in any app to mute")
+                LabeledContent("Recordings") {
+                    Button("Open folder") { NSWorkspace.shared.open(live.recordingsFolder) }
+                }
+            }
+            Section("Command line") {
+                Text("ven-cli process FILE --target -16 --format flac masters a file from Terminal; ven-cli selftest checks the DSP.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}

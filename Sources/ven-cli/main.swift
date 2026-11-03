@@ -64,8 +64,8 @@ case "selftest":
 
 case "devices":
     for d in AudioDevices.all() {
-        print(String(format: "%5d  in:%2d out:%2d  %6.0f Hz  %@%@", d.id, d.inputChannels, d.outputChannels, d.sampleRate,
-                     d.name, d.isVEN ? "  ← VEN" : ""))
+        print(String(format: "%5d  in:%2d out:%2d  %6.0f Hz  %@%@%@", d.id, d.inputChannels, d.outputChannels, d.sampleRate,
+                     d.name, d.isVEN ? "  ← VEN" : "", AudioDevices.isRunningSomewhere(d.id) ? "  [in use]" : ""))
     }
     if let auto = AudioDevices.automaticInput() { print("Automatic mic choice: \(auto.name)") }
 
