@@ -9,6 +9,8 @@ public struct Transcript: Codable {
         /// A point whisper's alignment puts inside the word (more reliable than start/end).
         public var anchor: Double
         public var probability: Float
+        /// The track name in a multitrack session.
+        public var speaker: String?
 
         public var normalized: String { text.lowercased().filter { $0.isLetter || $0 == "'" } }
         public var isFiller: Bool { Transcript.fillers.contains(normalized) }
@@ -77,6 +79,7 @@ public struct Transcript: Codable {
         public var start: Double
         public var end: Double
         public var text: String
+        public var speaker: String?
     }
 
     /// Spoken words in the edited timeline: anything removed by a cut (fillers, coughs) is left out.
@@ -108,7 +111,8 @@ public struct Transcript: Codable {
         var current: [Word] = []
         func flush() {
             guard let first = current.first, let last = current.last else { return }
-            cues.append(Cue(start: first.start, end: max(last.end, first.start + 0.8), text: current.map(\.text).joined(separator: " ")))
+            cues.append(Cue(start: first.start, end: max(last.end, first.start + 0.8), text: current.map(\.text).joined(separator: " "),
+                            speaker: first.speaker))
             current = []
         }
         for w in words {
@@ -116,7 +120,8 @@ public struct Transcript: Codable {
                 let length = current.map(\.text.count).reduce(0, +) + current.count + w.text.count
                 let sentenceEnd = last.text.last.map { ".?!".contains($0) } ?? false
                 let commaBreak = (last.text.last == ",") && length > 50
-                if length > 84 || w.end - current[0].start > 6 || w.start - last.end > 0.8 || sentenceEnd || commaBreak { flush() }
+                if length > 84 || w.end - current[0].start > 6 || w.start - last.end > 0.8 || sentenceEnd || commaBreak
+                    || w.speaker != last.speaker { flush() }
             }
             current.append(w)
         }
@@ -144,37 +149,43 @@ public struct Transcript: Codable {
         let words = edited(by: map)
         switch format {
         case .srt:
-            return Self.cues(words).enumerated().map { i, c in
-                "\(i + 1)\n\(Self.timestamp(c.start, separator: ",")) --> \(Self.timestamp(c.end, separator: ","))\n\(Self.wrap(c.text))\n"
+            // In a multitrack session, a cue starting a new speaker's turn is labelled with their name.
+            let cues = Self.cues(words)
+            return cues.enumerated().map { i, c in
+                let label = c.speaker != nil && (i == 0 || cues[i - 1].speaker != c.speaker) ? "\(c.speaker!): " : ""
+                return "\(i + 1)\n\(Self.timestamp(c.start, separator: ",")) --> \(Self.timestamp(c.end, separator: ","))\n\(Self.wrap(label + c.text))\n"
             }.joined(separator: "\n")
         case .vtt:
             return "WEBVTT\n\n" + Self.cues(words).map { c in
-                "\(Self.timestamp(c.start, separator: ".")) --> \(Self.timestamp(c.end, separator: "."))\n\(Self.wrap(c.text))\n"
+                let text = c.speaker.map { "<v \($0)>" } ?? ""
+                return "\(Self.timestamp(c.start, separator: ".")) --> \(Self.timestamp(c.end, separator: "."))\n\(text)\(Self.wrap(c.text))\n"
             }.joined(separator: "\n")
         case .txt:
-            // A new paragraph after a sentence that ends in a pause of 1.5 s or more.
+            // A new paragraph after a sentence that ends in a pause of 1.5 s or more, or when the speaker changes.
             var text = ""
             for (i, w) in words.enumerated() {
+                let turn = w.speaker != nil && (i == 0 || words[i - 1].speaker != w.speaker)
                 if i > 0 {
                     let pause = w.start - words[i - 1].end
                     let sentenceEnd = words[i - 1].text.last.map { ".?!".contains($0) } ?? false
-                    text += sentenceEnd && pause > 1.5 ? "\n\n" : " "
+                    text += turn || (sentenceEnd && pause > 1.5) ? "\n\n" : " "
                 }
+                if turn { text += "\(w.speaker!): " }
                 text += w.text
             }
             return text + "\n"
         case .json:
             struct Out: Encodable {
-                struct W: Encodable { let text: String; let start: Double; let end: Double; let confidence: Float }
-                struct C: Encodable { let start: Double; let end: Double; let text: String }
+                struct W: Encodable { let text: String; let start: Double; let end: Double; let confidence: Float; let speaker: String? }
+                struct C: Encodable { let start: Double; let end: Double; let text: String; let speaker: String? }
                 let language: String
                 let words: [W]
                 let cues: [C]
             }
             func r(_ t: Double) -> Double { (t * 1000).rounded() / 1000 }
             let out = Out(language: language,
-                          words: words.map { .init(text: $0.text, start: r($0.start), end: r($0.end), confidence: $0.probability) },
-                          cues: Self.cues(words).map { .init(start: r($0.start), end: r($0.end), text: $0.text) })
+                          words: words.map { .init(text: $0.text, start: r($0.start), end: r($0.end), confidence: $0.probability, speaker: $0.speaker) },
+                          cues: Self.cues(words).map { .init(start: r($0.start), end: r($0.end), text: $0.text, speaker: $0.speaker) })
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
             return String(decoding: (try? encoder.encode(out)) ?? Data(), as: UTF8.self)

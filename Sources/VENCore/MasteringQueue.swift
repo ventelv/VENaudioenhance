@@ -14,8 +14,17 @@ public final class MasteringQueue: ObservableObject {
         }
         public let id = UUID()
         public let input: URL
+        /// Set for a multitrack session; `input` is then its first track.
+        public var tracks: [SessionTrack]?
+        public var title: String
         public var output: URL?
         public var state: State = .queued
+
+        init(input: URL, tracks: [SessionTrack]? = nil, title: String? = nil) {
+            self.input = input
+            self.tracks = tracks
+            self.title = title ?? input.lastPathComponent
+        }
     }
 
     @Published public private(set) var jobs: [Job] = []
@@ -52,6 +61,13 @@ public final class MasteringQueue: ObservableObject {
         runNext()
     }
 
+    /// Queues a multitrack session, saved as "<name> (VEN)" next to its first track (or in the output folder).
+    public func addSession(_ tracks: [SessionTrack], name: String) {
+        guard let first = tracks.first(where: { !$0.isMusic }) else { return }
+        jobs.append(Job(input: first.url, tracks: tracks, title: name))
+        runNext()
+    }
+
     public func clearFinished() {
         jobs.removeAll {
             if case .done = $0.state { return true }
@@ -65,7 +81,8 @@ public final class MasteringQueue: ObservableObject {
         running = true
         let job = jobs[index]
         let settings = settings
-        let output = Mastering.outputURL(for: job.input, in: outputFolder, format: settings.format)
+        let named = job.tracks == nil ? job.input : job.input.deletingLastPathComponent().appendingPathComponent(job.title + ".wav")
+        let output = Mastering.outputURL(for: named, in: outputFolder, format: settings.format)
         jobs[index].output = output
         jobs[index].state = .running(0, "Starting")
         let id = job.id
@@ -73,7 +90,10 @@ public final class MasteringQueue: ObservableObject {
         Task.detached(priority: .userInitiated) {
             let report = Self.throttled { fraction, stage in Task { @MainActor in self.update(id, .running(fraction, stage)) } }
             let result: Result<MasteringAnalysis, Error> = Result {
-                try Mastering.analyze(input: job.input, settings: settings, progress: report)
+                if let tracks = job.tracks {
+                    return try Mastering.analyzeMultitrack(tracks, settings: settings, progress: report)
+                }
+                return try Mastering.analyze(input: job.input, settings: settings, progress: report)
             }
             await MainActor.run {
                 switch result {
@@ -136,6 +156,8 @@ public final class MasteringQueue: ObservableObject {
             return "\(n) \(k.label.lowercased())\(n == 1 ? "" : "s")"
         }
         if !cuts.isEmpty { parts.append(String(format: "cut %@ (%.1f s)", cuts.joined(separator: ", "), r.secondsCut)) }
+        if r.chapterCount > 0 { parts.append("\(r.chapterCount) chapters") }
+        if r.videoOutput != nil { parts.append("video written") }
         if !r.transcriptFiles.isEmpty { parts.append("transcript " + r.transcriptFiles.map { $0.pathExtension.uppercased() }.joined(separator: "/")) }
         return parts.joined(separator: ", ")
     }

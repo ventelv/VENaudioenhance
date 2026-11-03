@@ -4,6 +4,7 @@ A free, native macOS app that does what Auphonic does, locally:
 
 - **Live:** cleans up whatever microphone you choose in real time and hands it to every app through a virtual input called **VEN Enhanced Mic**.
 - **File mastering:** drop in recordings for an Auphonic-style pass: noise and hum removal, AutoEQ, adaptive leveler, breath reduction, and loudness normalization with a true-peak limiter.
+- **Production:** multitrack sessions (one mic per person, crossgated so voices don't bleed, music ducked under speech), intro/outro music, chapter marks, and video files with the cleaned audio put back in.
 - **Smart cutting and transcripts:** removes "um"/"uh", coughs and long pauses (you can review each cut first), and writes SRT/VTT/TXT/JSON transcripts. Speech recognition runs locally with whisper.cpp.
 
 ## Using it
@@ -33,6 +34,23 @@ In the default "When an app uses it" mode, VEN only opens your real mic while so
 - **Review:** with "Let me review cuts" on, a list opens with every cut. You can hear each one with and without the edit, switch cuts off, or export them as an Audacity label track.
 - **Transcripts:** SRT, VTT, TXT and JSON files are saved next to the output. Their timings match the edited audio, and the words that were cut are left out.
 
+**Multitrack:** click **Multitrack Session…** and add one recording per person, started at the same moment, plus any music. Each voice is cleaned up and leveled on its own, then turned down by 18 dB while someone else talks, so the other person's voice picked up by that mic disappears. Music is matched to the speech level and turned down under speech. Transcripts label each speaker.
+
+**Intro & outro:** choose a music file for each. It's matched to your voice's loudness. You can start talking before the intro finishes; the intro is then turned down under your voice.
+
+**Video:** drop in an .mp4 or .mov to get "name (VEN).mov" or ".mp4" with the cleaned audio. Any cuts are made in the picture too. The video is copied as-is, not re-encoded.
+
+**Chapters:** put "name.chapters.txt" next to "name.wav", with one line per chapter such as `0:00 Intro` or `12:30 Interview` (an Audacity label export also works). The chapters are shifted to match cuts and the intro. They are embedded in M4A and video output and saved as Podcasting 2.0 JSON and as text.
+
+**Studio noise engine (optional):** DeepFilterNet 3 removes changing noise, like keyboards, traffic and room echo, better than the standard engine. Build it once with Rust (`brew install rust`):
+
+```bash
+scripts/build-deepfilter.sh   # downloads and compiles DeepFilterNet (~5 min)
+scripts/build-app.sh          # bundles it into the app
+```
+
+Then choose Engine → Studio under Cleanup. It's used for file mastering; the live mic keeps the standard engine.
+
 Speech recognition needs whisper.cpp (`brew install whisper-cpp`) and a model. Download one in **Setup → Speech recognition**: Large v3 Turbo (compact) is 547 MB and handles 99 languages. Models already on this Mac from other whisper.cpp apps are found automatically.
 
 ## Live signal chain
@@ -60,6 +78,9 @@ scripts/uninstall-driver.sh   # remove the virtual mic
 .build/release/ven-cli process talk.wav --cut-fillers --cut-coughs --transcript srt,txt --labels
 .build/release/ven-cli transcribe talk.wav --formats srt,vtt   # transcript only
 .build/release/ven-cli models                       # installed and downloadable speech models
+.build/release/ven-cli process talk.mov --cut-fillers --intro jingle.wav --intro-overlap 3 --chapters talk.chapters.txt
+.build/release/ven-cli multitrack host.wav guest.wav --names Host,Guest --music bed.mp3 --transcript txt -o episode.wav
+.build/release/ven-cli process talk.wav --studio      # DeepFilterNet engine
 .build/release/ven-cli loudness file.wav            # EBU R128 loudness and true peak
 .build/release/ven-cli live --input "RØDE" --seconds 30   # run the live chain with stats
 .build/release/ven-cli record --device "VEN Enhanced Mic" --seconds 10 out.wav
@@ -78,5 +99,5 @@ scripts/uninstall-driver.sh   # remove the virtual mic
 
 ## Roadmap
 
-- "Studio" noise engine using DeepFilterNet. It handles keyboard clicks and other changing noises better.
-- Multitrack with crossgating and ducking, intro/outro with music ducking, video remux, and chapter markers.
+- DeepFilterNet for the live mic. It needs a real-time-safe build; today's library allocates memory while it runs.
+- MP3 chapter markers (ID3 CHAP).

@@ -39,7 +39,11 @@ public struct TimeMap {
     /// Each joint is crossfaded, which overlaps the two sides by this much.
     public static let fade = 0.015
 
-    public init(cuts: [EditCut]) {
+    /// Added to every mapped time: where the programme starts in the output (after an intro).
+    public var offset = 0.0
+
+    public init(cuts: [EditCut], offset: Double = 0) {
+        self.offset = offset
         var merged: [ClosedRange<Double>] = []
         for c in cuts.filter(\.accepted).sorted(by: { $0.start < $1.start }) where c.end > c.start {
             if let last = merged.last, c.start <= last.upperBound + 2 * Self.fade {
@@ -59,7 +63,14 @@ public struct TimeMap {
             if t <= r.upperBound { return nil }
             removed += r.upperBound - r.lowerBound + Self.fade
         }
-        return max(0, t - removed)
+        return max(0, t - removed) + offset
+    }
+
+    /// Like `map`, but a time inside a cut goes to the joint where the cut was.
+    public func mapClamped(_ t: Double) -> Double {
+        if let m = map(t) { return m }
+        let r = ranges.first { $0.contains(t) }!
+        return map(r.upperBound + 1e-6) ?? offset
     }
 
     public var totalRemoved: Double { ranges.reduce(0) { $0 + $1.upperBound - $1.lowerBound } }

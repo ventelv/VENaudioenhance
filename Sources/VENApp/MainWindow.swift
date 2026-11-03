@@ -160,6 +160,7 @@ struct MasteringTab: View {
     @State private var dropTargeted = false
     @State private var reviewing: ReviewTarget?
     @State private var postponed: Set<UUID> = []   // reviews the user put off with "Later"
+    @State private var showingSession = false
 
     struct ReviewTarget: Identifiable { let id: UUID }
 
@@ -177,10 +178,18 @@ struct MasteringTab: View {
         }
         .sheet(item: $reviewing) { target in
             if let analysis = queue.analyses[target.id], let job = queue.jobs.first(where: { $0.id == target.id }) {
-                CutReviewView(analysis: analysis, title: job.input.lastPathComponent,
+                CutReviewView(analysis: analysis, title: job.title,
                               export: { cuts in queue.finishReview(target.id, cuts: cuts); reviewing = nil },
                               discard: { queue.discardReview(target.id); reviewing = nil },
                               close: { postponed.insert(target.id); reviewing = nil })
+            }
+        }
+        .sheet(isPresented: $showingSession) {
+            MultitrackSheet { tracks, name in
+                queue.addSession(tracks, name: name)
+                showingSession = false
+            } cancel: {
+                showingSession = false
             }
         }
         // When a file is ready for review, open it (one at a time; "Later" leaves it in the queue).
@@ -198,7 +207,11 @@ struct MasteringTab: View {
             Text("Drop recordings here").font(.headline)
             Text("Noise & hum removal, AutoEQ, leveling, loudness to \(String(format: "%.0f", queue.settings.loudnessTarget)) LUFS")
                 .font(.caption).foregroundStyle(.secondary)
-            Button("Choose Files…") { chooseFiles() }
+            HStack {
+                Button("Choose Files…") { chooseFiles() }
+                Button("Multitrack Session…") { showingSession = true }
+                    .help("One recording per person (plus music): each is cleaned up, then mixed")
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 150)
         .background(RoundedRectangle(cornerRadius: 12)
@@ -245,7 +258,10 @@ struct JobRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(job.input.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                if let tracks = job.tracks {
+                    Image(systemName: "person.2.wave.2").foregroundStyle(.secondary).help("\(tracks.count) tracks")
+                }
+                Text(job.title).lineLimit(1).truncationMode(.middle)
                 Spacer()
                 if case .done = job.state, let out = job.output {
                     Button { NSWorkspace.shared.activateFileViewerSelecting([out]) } label: { Image(systemName: "magnifyingglass") }
@@ -299,6 +315,15 @@ struct MasteringSettingsForm: View {
                 Toggle("Noise reduction", isOn: $queue.settings.noiseReduction)
                 if queue.settings.noiseReduction {
                     SliderRow(value: $queue.settings.noiseStrength, range: 0...1, format: "%.0f%%", scale: 100)
+                    Picker("Engine", selection: $queue.settings.noiseEngine) {
+                        ForEach(MasteringSettings.NoiseEngine.allCases) { e in
+                            Text(e == .studio && !StudioDenoiser.isAvailable ? "\(e.label) — not installed" : e.label).tag(e)
+                        }
+                    }
+                    if queue.settings.noiseEngine == .studio && !StudioDenoiser.isAvailable {
+                        Text("Build it once with scripts/build-deepfilter.sh, then rebuild the app.")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                 }
                 Picker("Hum removal", selection: $queue.settings.humMode) {
                     ForEach(VoiceSettings.HumMode.allCases) { Text($0.label).tag($0) }
@@ -349,6 +374,28 @@ struct MasteringSettingsForm: View {
                     ForEach(SpeechLanguage.all, id: \.code) { Text($0.name).tag($0.code) }
                 }
                 SpeechStatus()
+            }
+            Section("Intro & outro") {
+                FileRow(title: "Intro", path: $queue.settings.introPath)
+                if queue.settings.introPath != nil {
+                    Stepper(value: $queue.settings.introOverlap, in: 0...20, step: 0.5) {
+                        Text(String(format: "Speech starts %.1f s before it ends", queue.settings.introOverlap))
+                    }
+                }
+                FileRow(title: "Outro", path: $queue.settings.outroPath)
+                if queue.settings.outroPath != nil {
+                    Stepper(value: $queue.settings.outroOverlap, in: 0...20, step: 0.5) {
+                        Text(String(format: "Starts %.1f s before speech ends", queue.settings.outroOverlap))
+                    }
+                }
+                SliderRow(label: "Music under speech", value: $queue.settings.duckingDB, range: 6...30, format: "−%.0f dB")
+                Text("Matched to your voice's loudness and turned down while you talk. Also used for music tracks in multitrack sessions.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Video & chapters") {
+                Toggle("For videos, also write the video with the new audio", isOn: $queue.settings.exportVideo)
+                Text("Cuts are made in the picture too. For chapter marks, put a text file named like the recording, ending in .chapters.txt, next to it, with lines such as “0:00 Intro” or “12:30 Interview”. They're embedded in M4A and video files and saved as Podcasting 2.0 JSON.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Watch folder") {
                 FolderRow(title: "Auto-process", url: $queue.watchFolder, placeholder: "Off")

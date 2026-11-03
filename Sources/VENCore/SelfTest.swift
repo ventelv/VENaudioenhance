@@ -23,6 +23,9 @@ public enum SelfTest {
             cutEditing(),
             fillerAndCoughPlacement(),
             subtitles(),
+            musicDucking(),
+            crossgateBleed(),
+            chapterTiming(),
         ]
     }
 

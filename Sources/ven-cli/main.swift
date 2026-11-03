@@ -17,7 +17,11 @@ func usage() -> Never {
       process IN [-o OUT] [--target LUFS] [--format wav24|flac|aac256|mp3|...]
               [--cut-fillers] [--cut-coughs] [--cut-silence] [--transcript srt,vtt,txt,json]
               [--labels] [--model PATH] [--language en|auto] [--no-autoeq] [--no-leveler] [--mono]
+              [--studio] [--intro FILE] [--outro FILE] [--intro-overlap S] [--outro-overlap S]
+              [--chapters FILE] [--no-video]
                                                 Auphonic-style mastering of a file
+      multitrack TRACK... [--names Host,Guest] [--music FILE]... [-o OUT] [process options]
+                                                mix a session recorded with one mic per person
       transcribe IN [--formats srt,vtt,txt,json] [--model PATH] [--language en|auto]
                                                 transcript only, written next to IN
       models                                    list speech models (and how to get one)
@@ -131,9 +135,20 @@ case "loudness":
         }
     }
 
-case "process":
-    guard args.count >= 2 else { usage() }
-    let input = URL(fileURLWithPath: args[1])
+case "process", "multitrack":
+    let multitrack = args[0] == "multitrack"
+    // Positional arguments: the input file, or for a session every speech track.
+    let valued: Set<String> = ["-o", "--target", "--format", "--transcript", "--model", "--language", "--intro", "--outro",
+                               "--intro-overlap", "--outro-overlap", "--chapters", "--music", "--names"]
+    var positional: [String] = []
+    var i = 1
+    while i < args.count {
+        if valued.contains(args[i]) { i += 2; continue }
+        if !args[i].hasPrefix("-") { positional.append(args[i]) }
+        i += 1
+    }
+    guard let firstInput = positional.first else { usage() }
+    let input = URL(fileURLWithPath: firstInput)
     var s = MasteringSettings()
     if let t = option("--target").flatMap(Double.init) { s.loudnessTarget = t }
     if let f = option("--format") {
@@ -146,6 +161,12 @@ case "process":
     s.transcriptFormats = transcriptFormats(option("--transcript"))
     s.speechModelPath = option("--model")
     if let lang = option("--language") { s.language = lang }
+    if args.contains("--studio") { s.noiseEngine = .studio }
+    s.introPath = option("--intro")
+    s.outroPath = option("--outro")
+    if let v = option("--intro-overlap").flatMap(Double.init) { s.introOverlap = v }
+    if let v = option("--outro-overlap").flatMap(Double.init) { s.outroOverlap = v }
+    if args.contains("--no-video") { s.exportVideo = false }
     s.autoEQ = !args.contains("--no-autoeq")
     s.leveler = !args.contains("--no-leveler")
     if args.contains("--mono") { s.channels = .mono }
@@ -156,7 +177,21 @@ case "process":
         let progress: (Double, String) -> Void = { _, stage in
             if stage != lastStage { print("  \(stage)…"); lastStage = stage }
         }
-        let analysis = try Mastering.analyze(input: input, settings: s, progress: progress)
+        let analysis: MasteringAnalysis
+        if multitrack {
+            let names = option("--names")?.split(separator: ",").map(String.init) ?? []
+            var tracks = positional.enumerated().map { i, path in
+                SessionTrack(url: URL(fileURLWithPath: path), name: i < names.count ? names[i] : nil)
+            }
+            // Every --music FILE adds a music track.
+            for (k, a) in args.enumerated() where a == "--music" && k + 1 < args.count {
+                tracks.append(SessionTrack(url: URL(fileURLWithPath: args[k + 1]), isMusic: true))
+            }
+            analysis = try Mastering.analyzeMultitrack(tracks, settings: s, progress: progress)
+        } else {
+            analysis = try Mastering.analyze(input: input, settings: s, progress: progress)
+        }
+        if let path = option("--chapters") { analysis.chapters = Chapters.parse(try String(contentsOfFile: path)) }
         for c in analysis.cuts {
             print(String(format: "  cut %@ %8.3f–%8.3f  %@", c.kind.label.padding(toLength: 7, withPad: " ", startingAt: 0), c.start, c.end, c.label))
         }
@@ -170,6 +205,7 @@ case "process":
         print("Output: \(describe(r.output))")
         print("Hum: \(r.humHz == 0 ? "none" : "\(r.humHz) Hz")  AutoEQ: \(r.autoEQ.map { String(format: "%.0fHz %+.1f", $0.hz, $0.db) }.joined(separator: ", "))")
         print("Breaths reduced: \(r.breathsReduced)  \(MasteringQueue.summary(r))")
+        if let v = r.videoOutput { print("Video: \(v.path)") }
         print(String(format: "Processed %.1f s of audio in %.1f s → %@", r.durationIn, Date().timeIntervalSince(start), r.outputURL.path))
     } catch {
         fail(error.localizedDescription)

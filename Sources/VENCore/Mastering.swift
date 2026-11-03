@@ -14,6 +14,7 @@ public struct MasteringSettings: Codable, Equatable {
     public var humMode: VoiceSettings.HumMode = .auto
     public var noiseReduction = true
     public var noiseStrength: Float = 0.9
+    public var noiseEngine: NoiseEngine = .standard
     public var autoEQ = true
     public var deEsser = true
     public var deEsserAmount: Float = 0.5
@@ -32,11 +33,29 @@ public struct MasteringSettings: Codable, Equatable {
     public var language = "auto"
     /// nil = the best installed model.
     public var speechModelPath: String?
+    /// Music or a jingle played before and after the programme; speech may start over the end of the intro.
+    public var introPath: String?
+    public var outroPath: String?
+    public var introOverlap = 0.0
+    public var outroOverlap = 0.0
+    /// How far music is turned down under speech (intro/outro overlaps and multitrack music).
+    public var duckingDB: Float = 15
+    /// For a video input: write a copy of the video with the processed audio.
+    public var exportVideo = true
     public var loudnessTarget = -16.0
     public var truePeakLimit = -1.0
     public var channels: Channels = .auto
     public var format: ExportFormat = .wav24
     public var outputRate = 48000.0
+
+    public enum NoiseEngine: String, Codable, CaseIterable, Identifiable {
+        /// RNNoise: fast, good on steady noise.
+        case standard
+        /// DeepFilterNet 3: better on changing noise (keyboards, traffic, rooms), slower.
+        case studio
+        public var id: String { rawValue }
+        public var label: String { self == .standard ? "Standard (RNNoise)" : "Studio (DeepFilterNet)" }
+    }
 
     public init() {}
 
@@ -70,6 +89,8 @@ public struct MasteringReport {
     public var cutCounts: [EditCut.Kind: Int]
     public var secondsCut: Double
     public var transcriptFiles: [URL]
+    public var videoOutput: URL?
+    public var chapterCount: Int
     public var durationIn: Double
     public var durationOut: Double
     public var outputURL: URL
@@ -87,6 +108,9 @@ public final class MasteringAnalysis {
     public let durationIn: Double
     public let transcript: Transcript?
     public var cuts: [EditCut]
+    /// Chapter marks on the input's timeline (from "name.chapters.txt" next to it, or set by the caller).
+    public var chapters: [Chapter] = []
+    public lazy var isVideo = VideoRemux.hasVideo(input)
 
     init(input: URL, settings: MasteringSettings, audio: PlanarBuffer, inLoudness: ven_loudness_result, humHz: Int,
          autoEQ: [(hz: Float, db: Float)], breathsReduced: Int, durationIn: Double, transcript: Transcript?, cuts: [EditCut]) {
@@ -100,6 +124,9 @@ public final class MasteringAnalysis {
         self.durationIn = durationIn
         self.transcript = transcript
         self.cuts = cuts
+        if let sidecar = Chapters.sidecar(for: input), let text = try? String(contentsOf: sidecar) {
+            chapters = Chapters.parse(text)
+        }
     }
 
     public var duration: Double { Double(audio.frames) / Mastering.rate }
@@ -150,17 +177,22 @@ public enum Mastering {
     }
 
     /// Everything up to the edit: cleanup, EQ, leveling, dynamics, transcript and candidate cuts.
-    public static func analyze(input: URL, settings s: MasteringSettings,
-                               progress: (Double, String) -> Void = { _, _ in }) throws -> MasteringAnalysis {
-        progress(0.02, "Reading")
-        var audio = try AudioIO.read(input, rate: rate)
-        let durationIn = Double(audio.frames) / rate
+    /// One track after cleanup, EQ, leveling and dynamics, with what was found along the way.
+    struct PreparedTrack {
+        let audio: PlanarBuffer
+        /// The track before noise reduction (same timeline), where coughs are easiest to hear.
+        let original: PlanarBuffer
+        let vad: [Float]
+        let humHz: Int
+        let eqBands: [(hz: Float, db: Float)]
+        let breaths: Int
+        let inLoudness: ven_loudness_result
+    }
 
-        if audio.channels == 2, s.channels == .mono || (s.channels == .auto && isDualMono(audio)) {
-            audio = mixToMono(audio)
-        }
+    /// Steps 1–4 of the pass. Progress runs from 0 to 1.
+    static func prepare(_ input: PlanarBuffer, settings s: MasteringSettings, progress: (Double, String) -> Void) throws -> PreparedTrack {
+        var audio = input
         let inLoudness = Loudness.measure(audio)
-        let span = s.needsTranscript ? 0.6 : 0.9   // share of the progress bar before transcription
 
         // 1. Cleanup: high-pass, hum, noise reduction. Also yields the speech map (VAD per 10 ms).
         var hum = 0
@@ -170,12 +202,14 @@ public enum Mastering {
         case .hz60: hum = 60
         case .off: hum = 0
         }
-        let cleanupStage = hum > 0 ? "Removing noise and \(hum) Hz hum" : "Removing noise"
-        progress(0.08, cleanupStage)
+        let studio = s.noiseReduction && s.noiseEngine == .studio
+        let cleanupStage = (hum > 0 ? "Removing noise and \(hum) Hz hum" : "Removing noise") + (studio ? " (Studio)" : "")
+        progress(0, cleanupStage)
         var cleanup = VoiceSettings()
         cleanup.highPassEnabled = s.highPass
         cleanup.humMode = hum == 50 ? .hz50 : (hum == 60 ? .hz60 : .off)
-        cleanup.noiseReductionEnabled = s.noiseReduction
+        // With the Studio engine, RNNoise still runs for its speech detection but leaves the audio alone.
+        cleanup.noiseReductionEnabled = s.noiseReduction && !studio
         cleanup.noiseReductionStrength = s.noiseStrength
         cleanup.voiceEQEnabled = false
         cleanup.deEsserEnabled = false
@@ -183,19 +217,22 @@ public enum Mastering {
         cleanup.compressorEnabled = false
         cleanup.limiterEnabled = false
         let original = audio
-        var (clean, vad) = runChain(audio, settings: cleanup, useNR: true) { progress(0.08 + span * 0.6 * $0, cleanupStage) }
+        var (clean, vad) = runChain(audio, settings: cleanup, useNR: true) { progress((studio ? 0.2 : 0.7) * $0, cleanupStage) }
+        if studio {
+            clean = try StudioDenoiser.process(clean, strength: s.noiseStrength) { progress(0.2 + 0.5 * $0, cleanupStage) }
+        }
         audio = clean
 
         // 2. AutoEQ toward a speech target curve.
         var eqBands: [(hz: Float, db: Float)] = []
         if s.autoEQ {
-            progress(span * 0.75, "AutoEQ")
+            progress(0.75, "AutoEQ")
             eqBands = autoEQBands(audio, vad: vad)
             applyEQ(audio, bands: eqBands)
         }
 
         // 3. Leveler and breath reduction as one smooth gain curve.
-        progress(span * 0.82, "Leveling")
+        progress(0.85, "Leveling")
         var gains = [Float](repeating: 0, count: vad.count)
         if s.leveler { gains = levelerCurve(audio, vad: vad, strength: s.levelerStrength) }
         var breaths = 0
@@ -203,25 +240,34 @@ public enum Mastering {
         applyGainCurve(audio, gainsDB: gains)
 
         // 4. De-esser and compressor.
-        progress(span * 0.9, "Compressing")
+        progress(0.93, "Compressing")
         var dyn = SelfTest.allOff()
         dyn.deEsserEnabled = s.deEsser
         dyn.deEsserAmount = s.deEsserAmount
         dyn.compressorEnabled = s.compressorAmount > 0
         dyn.compressorAmount = s.compressorAmount
         (clean, _) = runChain(audio, settings: dyn, useNR: false) { _ in }
-        audio = clean
+        return PreparedTrack(audio: clean, original: original, vad: vad, humHz: hum, eqBands: eqBands, breaths: breaths, inLoudness: inLoudness)
+    }
+
+    public static func analyze(input: URL, settings s: MasteringSettings,
+                               progress: (Double, String) -> Void = { _, _ in }) throws -> MasteringAnalysis {
+        progress(0.02, "Reading")
+        var input48 = try AudioIO.read(input, rate: rate)
+        let durationIn = Double(input48.frames) / rate
+        if input48.channels == 2, s.channels == .mono || (s.channels == .auto && isDualMono(input48)) {
+            input48 = mixToMono(input48)
+        }
+        let span = s.needsTranscript ? 0.6 : 0.9   // share of the progress bar before transcription
+        let p = try prepare(input48, settings: s) { progress(0.04 + (span - 0.04) * $0, $1) }
+        let audio = p.audio, original = p.original, vad = p.vad
+        let hum = p.humHz, eqBands = p.eqBands, breaths = p.breaths, inLoudness = p.inLoudness
 
         // 5. Transcript with word timings (whisper.cpp).
         var transcript: Transcript?
         if s.needsTranscript {
-            // A chosen model that has since been deleted falls back to the best installed one.
-            let chosen = s.speechModelPath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
-            guard let model = chosen ?? Speech.defaultModel() else {
-                throw AudioIOError(message: "Transcripts and filler cutting need a speech model. Download one in Settings → Setup.")
-            }
             progress(span, "Transcribing")
-            transcript = try Speech.transcribe(audio, model: model, language: s.language) { progress(span + 0.33 * $0, "Transcribing") }
+            transcript = try Speech.transcribe(audio, model: try speechModel(s), language: s.language) { progress(span + 0.33 * $0, "Transcribing") }
         }
 
         // 6. Candidate cuts.
@@ -240,15 +286,29 @@ public enum Mastering {
                                  breathsReduced: breaths, durationIn: durationIn, transcript: transcript, cuts: cuts)
     }
 
+    /// The chosen speech model; one that has since been deleted falls back to the best installed one.
+    static func speechModel(_ s: MasteringSettings) throws -> URL {
+        let chosen = s.speechModelPath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
+        guard let model = chosen ?? Speech.defaultModel() else {
+            throw AudioIOError(message: "Transcripts and filler cutting need a speech model. Download one in Settings → Setup.")
+        }
+        return model
+    }
+
     /// Applies the accepted cuts, normalizes loudness and writes the audio and transcripts.
     public static func finish(_ a: MasteringAnalysis, output: URL,
                               progress: (Double, String) -> Void = { _, _ in }) throws -> MasteringReport {
         let s = a.settings
-        let map = TimeMap(cuts: a.cuts)
+        var map = TimeMap(cuts: a.cuts)
         var audio = a.audio
         if !map.ranges.isEmpty {
             progress(0.95, "Cutting")
             audio = Cutting.apply(audio, map: map)
+        }
+        let programFrames = audio.frames
+        if !a.isVideo, (s.introPath ?? "").isEmpty == false || (s.outroPath ?? "").isEmpty == false {
+            progress(0.955, "Adding intro and outro")
+            (audio, map.offset) = try Production.addIntroOutro(audio, settings: s)
         }
 
         // Loudness normalization with a true-peak limiter; a second pass corrects what the limiter took away.
@@ -260,13 +320,41 @@ public enum Mastering {
         if s.outputRate != rate { final = try AudioIO.resample(audio, from: rate, to: s.outputRate) }
         try AudioIO.write(final, rate: s.outputRate, to: output, format: s.format)
         let files = try a.transcript?.write(s.transcriptFormats, besides: output, map: map) ?? []
+
+        let chapters = Chapters.remap(a.chapters, map)
+        if !chapters.isEmpty {
+            _ = try Chapters.writeSidecars(chapters, besides: output)
+            if ["m4a", "mp4", "mov"].contains(output.pathExtension.lowercased()) { try Chapters.embed(chapters, in: output) }
+        }
+
+        var videoOutput: URL?
+        if a.isVideo && s.exportVideo {
+            progress(0.99, "Writing video")
+            // The soundtrack goes in as AAC; reuse the export if it already is.
+            var soundtrack = output
+            let temp = FileManager.default.temporaryDirectory.appendingPathComponent("ven-\(UUID().uuidString).m4a")
+            defer { try? FileManager.default.removeItem(at: temp) }
+            if s.format != .aac256 && s.format != .aac128 {
+                try AudioIO.write(final, rate: s.outputRate, to: temp, format: .aac256)
+                soundtrack = temp
+            }
+            let url = VideoRemux.outputURL(for: a.input, besides: output)
+            do {
+                try VideoRemux.remux(video: a.input, audio: soundtrack, map: map, output: url)
+            } catch {
+                throw AudioIOError(message: "Couldn't write the video: \(error)")
+            }
+            if !chapters.isEmpty { try Chapters.embed(chapters, in: url) }
+            videoOutput = url
+        }
         progress(1, "Done")
 
         let accepted = a.cuts.filter(\.accepted)
         return MasteringReport(input: a.inLoudness, output: Loudness.measure(audio), humHz: a.humHz, autoEQ: a.autoEQ,
                                breathsReduced: a.breathsReduced,
                                cutCounts: Dictionary(grouping: accepted, by: \.kind).mapValues(\.count),
-                               secondsCut: a.durationIn - Double(audio.frames) / rate, transcriptFiles: files,
+                               secondsCut: a.durationIn - Double(programFrames) / rate, transcriptFiles: files,
+                               videoOutput: videoOutput, chapterCount: chapters.count,
                                durationIn: a.durationIn, durationOut: Double(audio.frames) / rate, outputURL: output)
     }
 

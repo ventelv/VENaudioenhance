@@ -16,6 +16,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/VENApp "$APP/Contents/MacOS/VEN Audio Enhance"
 cp .build/release/ven-cli "$APP/Contents/MacOS/ven-cli"
 cp -R build/VENMic.driver "$APP/Contents/Resources/"
+# Studio noise engine, if scripts/build-deepfilter.sh has been run.
+if [[ -f build/deps/out/libdf.dylib ]]; then
+  mkdir -p "$APP/Contents/Resources/DeepFilterNet"
+  cp build/deps/out/libdf.dylib build/deps/out/DeepFilterNet3_onnx.tar.gz "$APP/Contents/Resources/DeepFilterNet/"
+fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -47,6 +52,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 codesign --force --sign "$IDENTITY" "$APP/Contents/Resources/VENMic.driver"
 codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/ven-cli"
+[[ -f "$APP/Contents/Resources/DeepFilterNet/libdf.dylib" ]] && codesign --force --sign "$IDENTITY" "$APP/Contents/Resources/DeepFilterNet/libdf.dylib"
 codesign --force --sign "$IDENTITY" "$APP"
 echo "Built $APP"
 
