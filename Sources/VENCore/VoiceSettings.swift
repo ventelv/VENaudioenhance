@@ -2,6 +2,15 @@ import Foundation
 import VENDSP
 
 /// Every knob of the voice chain, in a form that can be saved and edited from SwiftUI.
+/// Decodes `data`, keeping `defaults` for anything an older version didn't save.
+public func decodeKeepingDefaults<T: Codable>(_ data: Data, defaults: T) -> T? {
+    guard let base = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(defaults)) as? [String: Any],
+          let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let merged = try? JSONSerialization.data(withJSONObject: base.merging(saved) { _, new in new })
+    else { return nil }
+    return try? JSONDecoder().decode(T.self, from: merged)
+}
+
 public struct VoiceSettings: Codable, Equatable {
     public enum HumMode: String, Codable, CaseIterable, Identifiable {
         case off, auto, hz50, hz60
@@ -27,6 +36,8 @@ public struct VoiceSettings: Codable, Equatable {
 
     public var noiseReductionEnabled = true
     public var noiseReductionStrength: Float = 0.85
+    /// DeepFilterNet ("Studio") instead of RNNoise, when it's installed.
+    public var studioNoise = true
 
     public var voiceEQEnabled = true
     public var voiceEQAmount: Float = 0.5

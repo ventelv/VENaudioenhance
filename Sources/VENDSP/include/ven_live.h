@@ -52,6 +52,17 @@ ven_ring *ven_live_raw_tap(ven_live *l);
 ven_ring *ven_live_enhanced_tap(ven_live *l);
 void ven_live_set_monitor(ven_live *l, int enabled);
 
+// Studio mode: an external denoiser (DeepFilterNet's df_process_frame on 480-sample frames, delaying the
+// signal by `delay` samples) runs with the rest of the chain on a worker thread, and the output callback only
+// reads finished audio. Start it before the audio units, stop it after. `state` stays owned by the caller.
+typedef float (*ven_denoise_fn)(void *_Nullable state, float *_Nonnull in, float *_Nonnull out);
+typedef void (*ven_denoise_atten_fn)(void *_Nullable state, float lim_db);
+int ven_live_start_worker(ven_live *_Nonnull l, ven_denoise_fn _Nonnull fn, ven_denoise_atten_fn _Nullable atten,
+                          void *_Nullable state, int delay);
+void ven_live_stop_worker(ven_live *_Nonnull l);
+// 1 = denoised, 0 = the raw mic (delayed to match), crossfaded over 20 ms; and the attenuation limit in dB.
+void ven_live_set_denoise(ven_live *_Nonnull l, float mix, float atten_db);
+
 // AURenderCallbacks.
 OSStatus ven_live_input_proc(void *_Nonnull refCon, AudioUnitRenderActionFlags *_Nonnull flags, const AudioTimeStamp *_Nonnull ts,
                              UInt32 bus, UInt32 frames, AudioBufferList *_Nullable io);

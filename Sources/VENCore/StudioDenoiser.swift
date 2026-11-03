@@ -1,9 +1,10 @@
 import Accelerate
 import Foundation
+import VENDSP
 
 /// DeepFilterNet 3 noise reduction, loaded at run time from libdf (built by scripts/build-deepfilter.sh).
-/// It handles changing noise (keyboards, traffic, room tone) better than RNNoise. Offline only: the library
-/// allocates while it runs, so it isn't safe in the live audio thread.
+/// It handles changing noise (keyboards, traffic, room tone) better than RNNoise. The library allocates while
+/// it runs, so on the live mic it runs on the core's own worker thread rather than in the audio callback.
 public enum StudioDenoiser {
     private typealias Create = @convention(c) (UnsafePointer<CChar>, Float, UnsafePointer<CChar>?) -> OpaquePointer?
     private typealias FrameLength = @convention(c) (OpaquePointer) -> Int
@@ -16,6 +17,9 @@ public enum StudioDenoiser {
         let process: ProcessFrame
         let free: Free
         let model: String
+        /// The same functions in the shape the live core calls them.
+        let liveProcess: ven_denoise_fn
+        let liveAtten: ven_denoise_atten_fn?
     }
 
     /// Where libdf.dylib and DeepFilterNet3_onnx.tar.gz are looked for: inside the app, then the build folder.
@@ -45,19 +49,47 @@ public enum StudioDenoiser {
             guard let create = symbol("df_create", as: Create.self), let frameLength = symbol("df_get_frame_length", as: FrameLength.self),
                   let process = symbol("df_process_frame", as: ProcessFrame.self), let free = symbol("df_free", as: Free.self)
             else { dlclose(handle); continue }
-            return Library(create: create, frameLength: frameLength, process: process, free: free, model: model.path)
+            return Library(create: create, frameLength: frameLength, process: process, free: free, model: model.path,
+                           liveProcess: unsafeBitCast(dlsym(handle, "df_process_frame")!, to: ven_denoise_fn.self),
+                           liveAtten: dlsym(handle, "df_set_atten_lim").map { unsafeBitCast($0, to: ven_denoise_atten_fn.self) })
         }
         return nil
     }()
 
     public static var isAvailable: Bool { library != nil }
 
+    /// DeepFilterNet's attenuation limit for a 0–1 strength (1 = no limit).
+    static func attenuationLimit(_ strength: Float) -> Float {
+        strength >= 0.99 ? 100 : 6 + 40 * max(0, strength)
+    }
+
+    /// One DeepFilterNet instance for the live mic (the core's worker thread runs it).
+    final class LiveState {
+        let state: UnsafeMutableRawPointer
+        let process: ven_denoise_fn
+        let setAtten: ven_denoise_atten_fn?
+        /// STFT plus look-ahead: two more frames than one hop.
+        let delay: Int
+        private let free: Free
+
+        init?() {
+            guard let lib = library, let st = lib.model.withCString({ lib.create($0, 100, nil) }) else { return nil }
+            state = UnsafeMutableRawPointer(st)
+            process = lib.liveProcess
+            setAtten = lib.liveAtten
+            delay = 3 * lib.frameLength(st)
+            free = lib.free
+        }
+
+        deinit { free(OpaquePointer(state)) }
+    }
+
     /// Denoises each channel. `strength` 0–1 maps to DeepFilterNet's attenuation limit (1 = no limit).
     static func process(_ audio: PlanarBuffer, strength: Float, progress: (Double) -> Void) throws -> PlanarBuffer {
         guard let lib = library else {
             throw AudioIOError(message: "The Studio noise engine isn't installed. Run scripts/build-deepfilter.sh, then rebuild the app.")
         }
-        let limit: Float = strength >= 0.99 ? 100 : 6 + 40 * max(0, strength)
+        let limit = attenuationLimit(strength)
         let out = PlanarBuffer(channels: audio.channels, frames: audio.frames)
         for c in 0..<audio.channels {
             guard let state = lib.model.withCString({ lib.create($0, limit, nil) }) else {

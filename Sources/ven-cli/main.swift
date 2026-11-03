@@ -10,7 +10,7 @@ func usage() -> Never {
 
       selftest                                  run the DSP checks
       devices                                   list audio devices
-      live [--input NAME] [--seconds N] [--preset ID] [--bypass]
+      live [--input NAME] [--seconds N] [--preset ID] [--bypass] [--standard]
                                                 feed the enhanced mic into VEN Enhanced Mic
       record --device NAME --seconds N OUT.wav  record any input (e.g. "VEN Enhanced Mic")
       loudness FILE...                          measure loudness (EBU R128)
@@ -96,11 +96,13 @@ case "live":
     guard let mic else { fail("No microphone found") }
     var settings = VoicePreset.all.first { $0.id == option("--preset") }?.settings ?? VoiceSettings()
     settings.bypass = args.contains("--bypass")
+    if args.contains("--standard") { settings.studioNoise = false }
     let seconds = Double(option("--seconds") ?? "") ?? 30
     do {
         let engine = try LiveEngine(input: mic, output: ven.id, settings: settings)
         try engine.start()
-        print("Live: \(mic.name) (\(Int(engine.inputRate)) Hz, \(engine.inputChannels) ch) → VEN Enhanced Mic for \(Int(seconds)) s")
+        print("Live: \(mic.name) (\(Int(engine.inputRate)) Hz, \(engine.inputChannels) ch) → VEN Enhanced Mic for \(Int(seconds)) s"
+              + (engine.usesStudio ? ", Studio engine" : ", standard engine"))
         runFor(seconds) {
             let m = engine.meters(), s = engine.stats()
             print(String(format: "in %6.1f dB  out %6.1f dB  vad %.2f  lev %+5.1f dB  comp -%4.1f  lim -%4.1f  hum %2.0f Hz  backlog %4.1f ms  drift %+.4f%%  xruns %llu/%llu  apps %d",

@@ -1,6 +1,11 @@
 #include "ven_live.h"
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_policy.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdatomic.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -103,6 +108,21 @@ struct ven_live {
 
     _Atomic uint64_t underruns, overruns, blocks;
     _Atomic double stat_fill_ms, stat_adjust;
+
+    // Studio mode (worker thread).
+    _Atomic int worker_on, worker_run;
+    pthread_t worker;
+    ven_denoise_fn df_fn;
+    ven_denoise_atten_fn df_atten;
+    void *df_state;
+    _Atomic float df_mix_target, df_atten_db;
+    float df_mix, df_atten_applied;
+    float *raw_delay;              // the raw mic, delayed to line up with the denoiser's output
+    int raw_delay_len, raw_delay_pos;
+    ven_ring *out_ring;
+    _Atomic int out_target;
+    int out_primed;
+    float wtmp[MAX_IN_FRAMES], wblock[VEN_BLOCK], wden[VEN_BLOCK];
 };
 
 ven_live *ven_live_create(double in_rate, int in_channels, int in_channel) {
@@ -129,6 +149,9 @@ ven_live *ven_live_create(double in_rate, int in_channels, int in_channel) {
 
 void ven_live_destroy(ven_live *l) {
     if (!l) return;
+    ven_live_stop_worker(l);
+    ven_ring_destroy(l->out_ring);
+    free(l->raw_delay);
     ven_ring_destroy(l->in_ring);
     ven_ring_destroy(l->raw_tap);
     ven_ring_destroy(l->enh_tap);
@@ -242,10 +265,140 @@ static int make_block(ven_live *l) {
     return 1;
 }
 
+// MARK: - Studio worker
+
+// Asks the scheduler for 4 ms of every 10 ms, like an audio thread (the denoiser needs ~1.5 ms per block).
+static void make_time_constrained(void) {
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    double ms = 1e6 * tb.denom / tb.numer;   // mach ticks per millisecond
+    thread_time_constraint_policy_data_t policy = {
+        .period = (uint32_t)(10 * ms), .computation = (uint32_t)(4 * ms), .constraint = (uint32_t)(10 * ms), .preemptible = 1,
+    };
+    thread_policy_set(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY,
+                      (thread_policy_t)&policy, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+}
+
+static void *worker_main(void *arg) {
+    ven_live *l = arg;
+    pthread_setname_np("VEN studio denoiser");
+    make_time_constrained();
+    double fill_avg = -1;
+    while (atomic_load(&l->worker_run)) {
+        int needed = ven_resampler_input_needed(l->rs, VEN_BLOCK);
+        if (ven_ring_available(l->in_ring) < needed) {
+            usleep(1000);
+            continue;
+        }
+        ven_ring_read(l->in_ring, l->wtmp, needed);
+        ven_resampler_push(l->rs, l->wtmp, needed);
+        ven_resampler_produce(l->rs, l->wblock, VEN_BLOCK);
+        int taps = atomic_load_explicit(&l->taps_on, memory_order_relaxed);
+        if (taps) ven_ring_write(l->raw_tap, l->wblock, VEN_BLOCK);
+
+        float atten = atomic_load(&l->df_atten_db);
+        if (l->df_atten && atten != l->df_atten_applied) {
+            l->df_atten(l->df_state, atten);
+            l->df_atten_applied = atten;
+        }
+        l->df_fn(l->df_state, l->wblock, l->wden);
+        // Blend with the equally delayed raw mic (Enhance off, or noise reduction off).
+        float target = atomic_load(&l->df_mix_target);
+        float step = 1.0f / (0.02f * VEN_SAMPLE_RATE);
+        for (int i = 0; i < VEN_BLOCK; i++) {
+            float raw = l->raw_delay[l->raw_delay_pos];
+            l->raw_delay[l->raw_delay_pos] = l->wblock[i];
+            l->raw_delay_pos = (l->raw_delay_pos + 1) % l->raw_delay_len;
+            l->df_mix += fmaxf(-step, fminf(step, target - l->df_mix));
+            l->wblock[i] = l->df_mix * l->wden[i] + (1 - l->df_mix) * raw;
+        }
+
+        float *chans[1] = { l->wblock };
+        ven_chain_process_block(l->chain, chans);
+        if (taps) ven_ring_write(l->enh_tap, l->wblock, VEN_BLOCK);
+        if (atomic_load_explicit(&l->monitor_on, memory_order_relaxed)) ven_ring_write(l->monitor, l->wblock, VEN_BLOCK);
+        if (ven_ring_write(l->out_ring, l->wblock, VEN_BLOCK) < VEN_BLOCK) atomic_fetch_add(&l->overruns, 1);
+        atomic_fetch_add_explicit(&l->blocks, 1, memory_order_relaxed);
+
+        // Clock drift: keep the finished-audio backlog around its target by nudging the resampling ratio.
+        int target_fill = atomic_load(&l->out_target) + VEN_BLOCK / 2;
+        int fill = ven_ring_available(l->out_ring);
+        fill_avg = fill_avg < 0 ? fill : fill_avg + 0.01 * (fill - fill_avg);
+        double err_s = (fill_avg - target_fill) / VEN_SAMPLE_RATE;
+        l->adjust = fmin(fmax(1.0 + 0.1 * err_s, 0.995), 1.005);
+        ven_resampler_set_adjust(l->rs, l->adjust);
+        atomic_store_explicit(&l->stat_fill_ms, 1000.0 * fill_avg / VEN_SAMPLE_RATE, memory_order_relaxed);
+        atomic_store_explicit(&l->stat_adjust, l->adjust, memory_order_relaxed);
+    }
+    return NULL;
+}
+
+int ven_live_start_worker(ven_live *l, ven_denoise_fn fn, ven_denoise_atten_fn atten, void *state, int delay) {
+    if (atomic_load(&l->worker_on)) return 0;
+    l->df_fn = fn;
+    l->df_atten = atten;
+    l->df_state = state;
+    l->df_atten_applied = NAN;
+    l->df_mix = atomic_load(&l->df_mix_target);
+    l->raw_delay_len = delay > 0 ? delay : 1;
+    l->raw_delay = calloc(l->raw_delay_len, sizeof(float));
+    l->raw_delay_pos = 0;
+    if (!l->out_ring) l->out_ring = ven_ring_create(VEN_SAMPLE_RATE / 2);
+    ven_ring_clear(l->out_ring);
+    l->out_primed = 0;
+    atomic_store(&l->out_target, 3 * VEN_BLOCK);
+    atomic_store(&l->worker_run, 1);
+    if (pthread_create(&l->worker, NULL, worker_main, l) != 0) {
+        atomic_store(&l->worker_run, 0);
+        return -1;
+    }
+    atomic_store(&l->worker_on, 1);
+    return 0;
+}
+
+void ven_live_stop_worker(ven_live *l) {
+    if (!atomic_load(&l->worker_on)) return;
+    atomic_store(&l->worker_run, 0);
+    pthread_join(l->worker, NULL);
+    atomic_store(&l->worker_on, 0);
+}
+
+void ven_live_set_denoise(ven_live *l, float mix, float atten_db) {
+    atomic_store(&l->df_mix_target, mix);
+    atomic_store(&l->df_atten_db, atten_db);
+}
+
+// Studio mode output: hand out what the worker finished, keeping a cushion for its scheduling jitter.
+static void output_from_worker(ven_live *l, float *out, UInt32 frames) {
+    int target = (int)frames + 2 * VEN_BLOCK;
+    if (atomic_load_explicit(&l->out_target, memory_order_relaxed) != target) atomic_store(&l->out_target, target);
+    if (!l->out_primed) {
+        if (ven_ring_available(l->out_ring) < target) {
+            memset(out, 0, frames * sizeof(float));
+            return;
+        }
+        l->out_primed = 1;
+    }
+    int got = ven_ring_read(l->out_ring, out, (int)frames);
+    if (got < (int)frames) {
+        memset(out + got, 0, (frames - got) * sizeof(float));
+        atomic_fetch_add(&l->underruns, 1);
+        l->out_primed = 0;
+    }
+    // Keep latency bounded if the backlog ever runs away.
+    int extra = ven_ring_available(l->out_ring) - (target + VEN_SAMPLE_RATE / 10);
+    if (extra > 0) ven_ring_skip(l->out_ring, extra);
+}
+
 OSStatus ven_live_output_proc(void *refCon, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts,
                               UInt32 bus, UInt32 frames, AudioBufferList *io) {
     ven_live *l = refCon;
     float *out0 = io->mBuffers[0].mData;
+    if (atomic_load_explicit(&l->worker_on, memory_order_acquire)) {
+        output_from_worker(l, out0, frames);
+        for (UInt32 b = 1; b < io->mNumberBuffers; b++) memcpy(io->mBuffers[b].mData, out0, frames * sizeof(float));
+        return noErr;
+    }
     UInt32 done = 0;
     while (done < frames) {
         if (l->fifo_pos == l->fifo_len && !make_block(l)) break;

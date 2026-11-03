@@ -46,6 +46,14 @@ struct LiveTab: View {
                     }
                     StageToggle("Noise reduction", isOn: $live.settings.noiseReductionEnabled) {
                         SliderRow(value: $live.settings.noiseReductionStrength, range: 0...1, format: "%.0f%%", scale: 100)
+                        Picker("Engine", selection: $live.settings.studioNoise) {
+                            Text(StudioDenoiser.isAvailable ? "Studio (DeepFilterNet)" : "Studio — not installed").tag(true)
+                            Text("Standard (RNNoise)").tag(false)
+                        }
+                        Text(live.settings.studioNoise && StudioDenoiser.isAvailable
+                             ? "Best on changing noise (voices, traffic, clatter). Adds about 50 ms of delay."
+                             : "Lightest on CPU and lowest delay; best on steady noise like fans.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     StageToggle("Pause gate", isOn: $live.settings.pauseGateEnabled) {
                         SliderRow(value: $live.settings.pauseGateDepthDB, range: 3...30, format: "−%.0f dB")

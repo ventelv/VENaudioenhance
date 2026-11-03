@@ -14,7 +14,7 @@ public struct MasteringSettings: Codable, Equatable {
     public var humMode: VoiceSettings.HumMode = .auto
     public var noiseReduction = true
     public var noiseStrength: Float = 0.9
-    public var noiseEngine: NoiseEngine = .standard
+    public var noiseEngine: NoiseEngine = .studio
     public var autoEQ = true
     public var deEsser = true
     public var deEsserAmount: Float = 0.5
@@ -61,11 +61,7 @@ public struct MasteringSettings: Codable, Equatable {
 
     /// Decodes saved settings, keeping defaults for anything saved by an older version.
     public static func decode(_ data: Data) -> MasteringSettings? {
-        guard let defaults = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(MasteringSettings())) as? [String: Any],
-              let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let merged = try? JSONSerialization.data(withJSONObject: defaults.merging(saved) { _, new in new })
-        else { return nil }
-        return try? JSONDecoder().decode(MasteringSettings.self, from: merged)
+        decodeKeepingDefaults(data, defaults: MasteringSettings())
     }
 
     public var needsTranscript: Bool { cutFillers || !transcriptFormats.isEmpty }
@@ -202,7 +198,8 @@ public enum Mastering {
         case .hz60: hum = 60
         case .off: hum = 0
         }
-        let studio = s.noiseReduction && s.noiseEngine == .studio
+        // Studio falls back to the standard engine where DeepFilterNet isn't installed.
+        let studio = s.noiseReduction && s.noiseEngine == .studio && StudioDenoiser.isAvailable
         let cleanupStage = (hum > 0 ? "Removing noise and \(hum) Hz hum" : "Removing noise") + (studio ? " (Studio)" : "")
         progress(0, cleanupStage)
         var cleanup = VoiceSettings()

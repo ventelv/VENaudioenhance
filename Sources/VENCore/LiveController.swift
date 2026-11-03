@@ -33,7 +33,14 @@ public final class LiveController: ObservableObject {
     @Published public var mode: Mode { didSet { save(); reconcile() } }
     @Published public var inputUID: String { didSet { save(); restart() } }
     @Published public var inputChannel: Int { didSet { save(); restart() } }   // -1 = mix all
-    @Published public var settings: VoiceSettings { didSet { engine?.apply(settings); if settings.mute == oldValue.mute { save() } } }
+    @Published public var settings: VoiceSettings {
+        didSet {
+            engine?.apply(settings)
+            if settings.mute == oldValue.mute { save() }
+            // Switching noise engines swaps how the audio is processed, so the engine is rebuilt.
+            if settings.studioNoise != oldValue.studioNoise { restart() }
+        }
+    }
     @Published public var presetID: String? { didSet { save() } }
     @Published public var monitor = false { didSet { try? engine?.setMonitor(monitor) } }
 
@@ -65,7 +72,7 @@ public final class LiveController: ObservableObject {
         inputUID = defaults.string(forKey: "live.input") ?? Self.automaticInputUID
         inputChannel = defaults.object(forKey: "live.channel") as? Int ?? -1
         presetID = defaults.string(forKey: "live.preset") ?? VoicePreset.podcast.id
-        if let data = defaults.data(forKey: "live.settings"), let s = try? JSONDecoder().decode(VoiceSettings.self, from: data) {
+        if let data = defaults.data(forKey: "live.settings"), let s = decodeKeepingDefaults(data, defaults: VoiceSettings()) {
             settings = s
         } else {
             settings = VoicePreset.podcast.settings

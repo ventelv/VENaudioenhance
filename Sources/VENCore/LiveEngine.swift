@@ -24,6 +24,9 @@ public final class LiveEngine {
     private var outputUnit: AudioUnit?
     private var monitorUnit: AudioUnit?
     private var recorder: TapRecorder?
+    /// DeepFilterNet for the Studio engine; freed after the core (and its worker thread) is gone.
+    private var studio: StudioDenoiser.LiveState?
+    public var usesStudio: Bool { studio != nil }
 
     public init(input: AudioDevice, output: AudioDeviceID, channel: Int? = nil, settings: VoiceSettings) throws {
         self.input = input
@@ -51,6 +54,10 @@ public final class LiveEngine {
 
         core = ven_live_create(inputRate, Int32(inputChannels), Int32(channel ?? -1))
         ven_live_set_input_unit(core, unit)
+        if settings.studioNoise, let st = StudioDenoiser.LiveState() {
+            studio = st
+            ven_live_start_worker(core, st.process, st.setAtten, st.state, Int32(st.delay))
+        }
         apply(settings)
 
         var inputCallback = AURenderCallbackStruct(inputProc: ven_live_input_proc, inputProcRefCon: UnsafeMutableRawPointer(core))
@@ -87,6 +94,12 @@ public final class LiveEngine {
 
     public func apply(_ settings: VoiceSettings) {
         var params = settings.params
+        if studio != nil {
+            // DeepFilterNet does the denoising; RNNoise in the chain then only detects speech.
+            params.nr_enabled = 0
+            let on = settings.noiseReductionEnabled && !settings.bypass
+            ven_live_set_denoise(core, on ? 1 : 0, StudioDenoiser.attenuationLimit(settings.noiseReductionStrength))
+        }
         ven_chain_set_params(ven_live_chain(core), &params)
     }
 
@@ -104,7 +117,7 @@ public final class LiveEngine {
 
     /// Processing delay inside the chain, plus the input backlog the drift controller keeps.
     public var latencyMs: Double {
-        Double(ven_chain_latency(ven_live_chain(core))) / 48.0 + stats().ring_fill_ms
+        Double(ven_chain_latency(ven_live_chain(core)) + Int32(studio?.delay ?? 0)) / 48.0 + stats().ring_fill_ms
     }
 
     // MARK: Headphone monitor
