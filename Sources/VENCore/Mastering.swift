@@ -14,7 +14,7 @@ public struct MasteringSettings: Codable, Equatable {
     public var humMode: VoiceSettings.HumMode = .auto
     public var noiseReduction = true
     public var noiseStrength: Float = 0.9
-    public var noiseEngine: NoiseEngine = .studio
+    public var noiseEngine: NoiseEngine = .standard
     public var autoEQ = true
     public var deEsser = true
     public var deEsserAmount: Float = 0.5

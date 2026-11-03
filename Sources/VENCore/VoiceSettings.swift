@@ -36,8 +36,8 @@ public struct VoiceSettings: Codable, Equatable {
 
     public var noiseReductionEnabled = true
     public var noiseReductionStrength: Float = 0.85
-    /// DeepFilterNet ("Studio") instead of RNNoise, when it's installed.
-    public var studioNoise = true
+    /// DeepFilterNet ("Studio") instead of RNNoise, when it's installed. Off by default: it adds delay and CPU.
+    public var studioNoise = false
 
     public var voiceEQEnabled = true
     public var voiceEQAmount: Float = 0.5
