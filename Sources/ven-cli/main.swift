@@ -25,6 +25,7 @@ func usage() -> Never {
       transcribe IN [--formats srt,vtt,txt,json] [--model PATH] [--language en|auto]
                                                 transcript only, written next to IN
       models                                    list speech models (and how to get one)
+      denoise IN OUT.wav [--studio]             noise reduction only (compare the two engines)
       demo SPEECH OUT.wav                       degrade a clean speech file for testing
     """)
     exit(2)
@@ -207,6 +208,15 @@ case "process", "multitrack":
         print("Breaths reduced: \(r.breathsReduced)  \(MasteringQueue.summary(r))")
         if let v = r.videoOutput { print("Video: \(v.path)") }
         print(String(format: "Processed %.1f s of audio in %.1f s → %@", r.durationIn, Date().timeIntervalSince(start), r.outputURL.path))
+    } catch {
+        fail(error.localizedDescription)
+    }
+
+case "denoise":
+    guard args.count >= 3 else { usage() }
+    do {
+        try Mastering.denoise(input: URL(fileURLWithPath: args[1]), output: URL(fileURLWithPath: args[2]),
+                              engine: args.contains("--studio") ? .studio : .standard)
     } catch {
         fail(error.localizedDescription)
     }

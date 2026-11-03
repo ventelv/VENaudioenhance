@@ -26,6 +26,7 @@ public enum SelfTest {
             musicDucking(),
             crossgateBleed(),
             chapterTiming(),
+            studioEngine(),
         ]
     }
 

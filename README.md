@@ -49,7 +49,7 @@ scripts/build-deepfilter.sh   # downloads and compiles DeepFilterNet (~5 min)
 scripts/build-app.sh          # bundles it into the app
 ```
 
-Then choose Engine → Studio under Cleanup. It's used for file mastering; the live mic keeps the standard engine.
+Then choose Engine → Studio under Cleanup. It's used for file mastering; the live mic keeps the standard engine. It runs about 6× faster than real time, against roughly 80× for the standard engine. To compare the two on your own recording, use `ven-cli denoise talk.wav out.wav [--studio]`.
 
 Speech recognition needs whisper.cpp (`brew install whisper-cpp`) and a model. Download one in **Setup → Speech recognition**: Large v3 Turbo (compact) is 547 MB and handles 99 languages. Models already on this Mac from other whisper.cpp apps are found automatically.
 

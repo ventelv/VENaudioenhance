@@ -65,4 +65,24 @@ extension SelfTest {
         return Result(name: "Chapters follow cuts and intro", passed: ok,
                       detail: out.map { String(format: "%.3f %@", $0.start, $0.title) }.joined(separator: ", "))
     }
+
+    static func studioEngine() -> Result {
+        let name = "Studio engine (DeepFilterNet) keeps voice, aligned"
+        guard StudioDenoiser.isAvailable else { return Result(name: name, passed: true, detail: "not installed, skipped") }
+        // The synthetic programme's voiced "words" over a faint noise floor. They're a buzz rather than real speech,
+        // so DeepFilterNet turns them down somewhat; this checks timing and that the voice isn't removed.
+        let p = syntheticProgramme()
+        do {
+            let out = try StudioDenoiser.process(p.audio, strength: 1) { _ in }
+            let x = p.audio.array(0), y = out.array(0)
+            let lag = StudioDenoiser.measureDelay(x, y + [Float](repeating: 0, count: 600), maxLag: 500)
+            let word = p.spoken[0]
+            let r = Int(word.lowerBound * 48000)..<Int(word.upperBound * 48000)
+            let change = rmsDB(y[r]) - rmsDB(x[r])
+            let ok = lag <= 2 && change > -12 && change < 1
+            return Result(name: name, passed: ok, detail: String(format: "offset %d samples, voice level %+.1f dB", lag, change))
+        } catch {
+            return Result(name: name, passed: false, detail: error.localizedDescription)
+        }
+    }
 }

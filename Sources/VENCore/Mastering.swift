@@ -286,6 +286,21 @@ public enum Mastering {
                                  breathsReduced: breaths, durationIn: durationIn, transcript: transcript, cuts: cuts)
     }
 
+    /// Noise reduction alone (plus the rumble filter), at the input's level: for comparing engines.
+    public static func denoise(input: URL, output: URL, engine: MasteringSettings.NoiseEngine, strength: Float = 1) throws {
+        var s = MasteringSettings()
+        s.noiseEngine = engine
+        s.noiseStrength = strength
+        s.humMode = .off
+        s.autoEQ = false
+        s.leveler = false
+        s.breathReduction = false
+        s.deEsser = false
+        s.compressorAmount = 0
+        let p = try prepare(try AudioIO.read(input, rate: rate), settings: s) { _, _ in }
+        try AudioIO.write(p.audio, to: output, format: .wav24)
+    }
+
     /// The chosen speech model; one that has since been deleted falls back to the best installed one.
     static func speechModel(_ s: MasteringSettings) throws -> URL {
         let chosen = s.speechModelPath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }

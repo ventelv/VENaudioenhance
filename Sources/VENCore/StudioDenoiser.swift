@@ -24,7 +24,12 @@ public enum StudioDenoiser {
         if let resources = Bundle.main.resourceURL { folders.append(resources.appendingPathComponent("DeepFilterNet")) }
         let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
         folders.append(exe.deletingLastPathComponent().appendingPathComponent("Resources/DeepFilterNet"))   // ven-cli inside the app
-        folders.append(exe.appendingPathComponent("../../build/deps/out").standardized)                    // .build/release/ven-cli
+        // Running from the project (e.g. .build/arm64-apple-macosx/release/ven-cli): build/deps/out above it.
+        var dir = exe
+        for _ in 0..<5 {
+            dir = dir.deletingLastPathComponent()
+            folders.append(dir.appendingPathComponent("build/deps/out"))
+        }
         folders.append(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("VEN Audio Enhance/DeepFilterNet"))
         return folders
