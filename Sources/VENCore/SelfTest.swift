@@ -20,6 +20,9 @@ public enum SelfTest {
             levelerSteps(),
             resamplerAccuracy(),
             bypassMatchesInput(),
+            cutEditing(),
+            fillerAndCoughPlacement(),
+            subtitles(),
         ]
     }
 

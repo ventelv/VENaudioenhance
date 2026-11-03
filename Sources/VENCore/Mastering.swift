@@ -24,6 +24,14 @@ public struct MasteringSettings: Codable, Equatable {
     public var breathReductionDB: Float = 12
     public var cutSilence = false
     public var maxPauseSeconds = 0.8
+    public var cutFillers = false
+    public var cutCoughs = false
+    /// In the app: stop before export so cuts can be checked one by one.
+    public var reviewCuts = true
+    public var transcriptFormats: [Transcript.Format] = []
+    public var language = "auto"
+    /// nil = the best installed model.
+    public var speechModelPath: String?
     public var loudnessTarget = -16.0
     public var truePeakLimit = -1.0
     public var channels: Channels = .auto
@@ -31,6 +39,18 @@ public struct MasteringSettings: Codable, Equatable {
     public var outputRate = 48000.0
 
     public init() {}
+
+    /// Decodes saved settings, keeping defaults for anything saved by an older version.
+    public static func decode(_ data: Data) -> MasteringSettings? {
+        guard let defaults = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(MasteringSettings())) as? [String: Any],
+              let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let merged = try? JSONSerialization.data(withJSONObject: defaults.merging(saved) { _, new in new })
+        else { return nil }
+        return try? JSONDecoder().decode(MasteringSettings.self, from: merged)
+    }
+
+    public var needsTranscript: Bool { cutFillers || !transcriptFormats.isEmpty }
+    public var cutsAnything: Bool { cutFillers || cutCoughs || cutSilence }
 
     public static let loudnessTargets: [(value: Double, label: String)] = [
         (-14, "-14 LUFS · YouTube, Spotify"),
@@ -47,11 +67,70 @@ public struct MasteringReport {
     public var humHz: Int
     public var autoEQ: [(hz: Float, db: Float)]
     public var breathsReduced: Int
-    public var pausesCut: Int
+    public var cutCounts: [EditCut.Kind: Int]
     public var secondsCut: Double
+    public var transcriptFiles: [URL]
     public var durationIn: Double
     public var durationOut: Double
     public var outputURL: URL
+}
+
+/// The programme after processing, before cutting and loudness normalization: lets cuts be reviewed before export.
+public final class MasteringAnalysis {
+    public let input: URL
+    public let settings: MasteringSettings
+    let audio: PlanarBuffer
+    public let inLoudness: ven_loudness_result
+    public let humHz: Int
+    public let autoEQ: [(hz: Float, db: Float)]
+    public let breathsReduced: Int
+    public let durationIn: Double
+    public let transcript: Transcript?
+    public var cuts: [EditCut]
+
+    init(input: URL, settings: MasteringSettings, audio: PlanarBuffer, inLoudness: ven_loudness_result, humHz: Int,
+         autoEQ: [(hz: Float, db: Float)], breathsReduced: Int, durationIn: Double, transcript: Transcript?, cuts: [EditCut]) {
+        self.input = input
+        self.settings = settings
+        self.audio = audio
+        self.inLoudness = inLoudness
+        self.humHz = humHz
+        self.autoEQ = autoEQ
+        self.breathsReduced = breathsReduced
+        self.durationIn = durationIn
+        self.transcript = transcript
+        self.cuts = cuts
+    }
+
+    public var duration: Double { Double(audio.frames) / Mastering.rate }
+    public var sampleRate: Double { Mastering.rate }
+
+    /// Peak level per column, for drawing the waveform.
+    public func overview(columns: Int) -> [Float] {
+        let mono = audio.channel(0)
+        let per = max(1, audio.frames / max(columns, 1))
+        return (0..<columns).map { c in
+            let start = c * per
+            guard start < audio.frames else { return 0 }
+            var peak: Float = 0
+            vDSP_maxmgv(mono + start, 1, &peak, vDSP_Length(min(per, audio.frames - start)))
+            return peak
+        }
+    }
+
+    /// Mono samples of [from, to) seconds, optionally with the given cuts applied, for previewing.
+    public func preview(from: Double, to: Double, cuts: [EditCut] = []) -> [Float] {
+        let s = max(0, Int(from * Mastering.rate)), e = min(audio.frames, Int(to * Mastering.rate))
+        guard e > s else { return [] }
+        let clip = Mastering.mixToMono(audio.slice(s, e - s))
+        let shifted = cuts.map { c -> EditCut in var c = c; c.start -= from; c.end -= from; c.accepted = true; return c }
+        let edited = Cutting.apply(clip, map: TimeMap(cuts: shifted))
+        // Same loudness as the export will have, roughly: bring speech peaks near -3 dBFS.
+        var peak: Float = 0
+        vDSP_maxmgv(edited.channel(0), 1, &peak, vDSP_Length(edited.frames))
+        let gain = peak > 1e-4 ? min(10, 0.7 / peak) : 1
+        return edited.array(0).map { $0 * gain }
+    }
 }
 
 public enum Mastering {
@@ -66,6 +145,13 @@ public enum Mastering {
 
     public static func process(input: URL, output: URL, settings s: MasteringSettings,
                                progress: (Double, String) -> Void = { _, _ in }) throws -> MasteringReport {
+        let analysis = try analyze(input: input, settings: s, progress: progress)
+        return try finish(analysis, output: output, progress: progress)
+    }
+
+    /// Everything up to the edit: cleanup, EQ, leveling, dynamics, transcript and candidate cuts.
+    public static func analyze(input: URL, settings s: MasteringSettings,
+                               progress: (Double, String) -> Void = { _, _ in }) throws -> MasteringAnalysis {
         progress(0.02, "Reading")
         var audio = try AudioIO.read(input, rate: rate)
         let durationIn = Double(audio.frames) / rate
@@ -74,6 +160,7 @@ public enum Mastering {
             audio = mixToMono(audio)
         }
         let inLoudness = Loudness.measure(audio)
+        let span = s.needsTranscript ? 0.6 : 0.9   // share of the progress bar before transcription
 
         // 1. Cleanup: high-pass, hum, noise reduction. Also yields the speech map (VAD per 10 ms).
         var hum = 0
@@ -83,7 +170,8 @@ public enum Mastering {
         case .hz60: hum = 60
         case .off: hum = 0
         }
-        progress(0.08, hum > 0 ? "Removing noise and \(hum) Hz hum" : "Removing noise")
+        let cleanupStage = hum > 0 ? "Removing noise and \(hum) Hz hum" : "Removing noise"
+        progress(0.08, cleanupStage)
         var cleanup = VoiceSettings()
         cleanup.highPassEnabled = s.highPass
         cleanup.humMode = hum == 50 ? .hz50 : (hum == 60 ? .hz60 : .off)
@@ -94,19 +182,20 @@ public enum Mastering {
         cleanup.levelerEnabled = false
         cleanup.compressorEnabled = false
         cleanup.limiterEnabled = false
-        var (clean, vad) = runChain(audio, settings: cleanup, useNR: true) { progress(0.08 + 0.42 * $0, "Removing noise") }
+        let original = audio
+        var (clean, vad) = runChain(audio, settings: cleanup, useNR: true) { progress(0.08 + span * 0.6 * $0, cleanupStage) }
         audio = clean
 
         // 2. AutoEQ toward a speech target curve.
         var eqBands: [(hz: Float, db: Float)] = []
         if s.autoEQ {
-            progress(0.52, "AutoEQ")
+            progress(span * 0.75, "AutoEQ")
             eqBands = autoEQBands(audio, vad: vad)
             applyEQ(audio, bands: eqBands)
         }
 
         // 3. Leveler and breath reduction as one smooth gain curve.
-        progress(0.6, "Leveling")
+        progress(span * 0.82, "Leveling")
         var gains = [Float](repeating: 0, count: vad.count)
         if s.leveler { gains = levelerCurve(audio, vad: vad, strength: s.levelerStrength) }
         var breaths = 0
@@ -114,7 +203,7 @@ public enum Mastering {
         applyGainCurve(audio, gainsDB: gains)
 
         // 4. De-esser and compressor.
-        progress(0.68, "Compressing")
+        progress(span * 0.9, "Compressing")
         var dyn = SelfTest.allOff()
         dyn.deEsserEnabled = s.deEsser
         dyn.deEsserAmount = s.deEsserAmount
@@ -123,26 +212,62 @@ public enum Mastering {
         (clean, _) = runChain(audio, settings: dyn, useNR: false) { _ in }
         audio = clean
 
-        // 5. Shorten long pauses.
-        var cuts = (count: 0, seconds: 0.0)
-        if s.cutSilence {
-            progress(0.76, "Cutting pauses")
-            (audio, cuts) = cutPauses(audio, vad: vad, maxPause: s.maxPauseSeconds)
+        // 5. Transcript with word timings (whisper.cpp).
+        var transcript: Transcript?
+        if s.needsTranscript {
+            // A chosen model that has since been deleted falls back to the best installed one.
+            let chosen = s.speechModelPath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
+            guard let model = chosen ?? Speech.defaultModel() else {
+                throw AudioIOError(message: "Transcripts and filler cutting need a speech model. Download one in Settings → Setup.")
+            }
+            progress(span, "Transcribing")
+            transcript = try Speech.transcribe(audio, model: model, language: s.language) { progress(span + 0.33 * $0, "Transcribing") }
         }
 
-        // 6. Loudness normalization with a true-peak limiter; a second pass corrects what the limiter took away.
-        progress(0.82, "Normalizing loudness")
+        // 6. Candidate cuts.
+        var cuts: [EditCut] = []
+        if s.cutsAnything {
+            progress(0.94, "Finding cuts")
+            var options = Cutting.Options()
+            options.fillers = s.cutFillers
+            options.coughs = s.cutCoughs
+            options.silence = s.cutSilence
+            options.maxPause = s.maxPauseSeconds
+            cuts = Cutting.detect(audio, original: original, vad: vad, words: transcript?.words, options: options)
+        }
+
+        return MasteringAnalysis(input: input, settings: s, audio: audio, inLoudness: inLoudness, humHz: hum, autoEQ: eqBands,
+                                 breathsReduced: breaths, durationIn: durationIn, transcript: transcript, cuts: cuts)
+    }
+
+    /// Applies the accepted cuts, normalizes loudness and writes the audio and transcripts.
+    public static func finish(_ a: MasteringAnalysis, output: URL,
+                              progress: (Double, String) -> Void = { _, _ in }) throws -> MasteringReport {
+        let s = a.settings
+        let map = TimeMap(cuts: a.cuts)
+        var audio = a.audio
+        if !map.ranges.isEmpty {
+            progress(0.95, "Cutting")
+            audio = Cutting.apply(audio, map: map)
+        }
+
+        // Loudness normalization with a true-peak limiter; a second pass corrects what the limiter took away.
+        progress(0.96, "Normalizing loudness")
         audio = normalize(audio, target: s.loudnessTarget, ceiling: s.truePeakLimit)
 
-        progress(0.94, "Writing \(s.format.label)")
+        progress(0.98, "Writing \(s.format.label)")
         var final = audio
         if s.outputRate != rate { final = try AudioIO.resample(audio, from: rate, to: s.outputRate) }
         try AudioIO.write(final, rate: s.outputRate, to: output, format: s.format)
+        let files = try a.transcript?.write(s.transcriptFormats, besides: output, map: map) ?? []
         progress(1, "Done")
 
-        return MasteringReport(input: inLoudness, output: Loudness.measure(audio), humHz: hum, autoEQ: eqBands,
-                               breathsReduced: breaths, pausesCut: cuts.count, secondsCut: cuts.seconds,
-                               durationIn: durationIn, durationOut: Double(audio.frames) / rate, outputURL: output)
+        let accepted = a.cuts.filter(\.accepted)
+        return MasteringReport(input: a.inLoudness, output: Loudness.measure(audio), humHz: a.humHz, autoEQ: a.autoEQ,
+                               breathsReduced: a.breathsReduced,
+                               cutCounts: Dictionary(grouping: accepted, by: \.kind).mapValues(\.count),
+                               secondsCut: a.durationIn - Double(audio.frames) / rate, transcriptFiles: files,
+                               durationIn: a.durationIn, durationOut: Double(audio.frames) / rate, outputURL: output)
     }
 
     // MARK: Stages
@@ -357,48 +482,6 @@ public enum Mastering {
                 x[i] *= lin[b0] + (lin[b1] - lin[b0]) * t
             }
         }
-    }
-
-    /// Shortens pauses longer than `maxPause`, keeping half the allowed pause on each side and crossfading the joint.
-    static func cutPauses(_ a: PlanarBuffer, vad: [Float], maxPause: Double) -> (PlanarBuffer, (count: Int, seconds: Double)) {
-        let keepBlocks = max(4, Int(maxPause * rate) / block)
-        var segments: [Range<Int>] = []   // sample ranges to keep
-        var keepStart = 0, i = 0, cutCount = 0, cutFrames = 0
-        while i < vad.count {
-            guard vad[i] < 0.3 else { i += 1; continue }
-            var j = i
-            while j < vad.count, vad[j] < 0.3 { j += 1 }
-            if j - i > keepBlocks, i > 0, j < vad.count {
-                let cutFrom = (i + keepBlocks / 2) * block, cutTo = (j - keepBlocks / 2) * block
-                segments.append(keepStart..<cutFrom)
-                keepStart = cutTo
-                cutCount += 1
-                cutFrames += cutTo - cutFrom
-            }
-            i = j
-        }
-        guard cutCount > 0 else { return (a, (0, 0)) }
-        segments.append(keepStart..<a.frames)
-
-        let fade = Int(0.015 * rate)
-        let total = segments.reduce(0) { $0 + $1.count } - fade * (segments.count - 1)
-        let out = PlanarBuffer(channels: a.channels, frames: total)
-        for c in 0..<a.channels {
-            let src = a.channel(c), dst = out.channel(c)
-            var w = 0
-            for (s, seg) in segments.enumerated() {
-                for (k, idx) in seg.enumerated() {
-                    if s > 0 && k < fade {
-                        let t = Float(k) / Float(fade)   // equal-power crossfade into the previous tail
-                        dst[w - fade + k] = dst[w - fade + k] * cos(t * .pi / 2) + src[idx] * sin(t * .pi / 2)
-                    } else {
-                        dst[w] = src[idx]
-                        w += 1
-                    }
-                }
-            }
-        }
-        return (out, (cutCount, Double(cutFrames) / rate))
     }
 
     static func normalize(_ a: PlanarBuffer, target: Double, ceiling: Double) -> PlanarBuffer {

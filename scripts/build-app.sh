@@ -33,6 +33,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>LSApplicationCategoryType</key><string>public.app-category.music</string>
 	<key>NSMicrophoneUsageDescription</key><string>VEN Audio Enhance cleans up your microphone and passes it to other apps through VEN Enhanced Mic.</string>
 	<key>NSHighResolutionCapable</key><true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key><string>Audio or video recording</string>
+			<key>CFBundleTypeRole</key><string>Editor</string>
+			<key>LSHandlerRank</key><string>Alternate</string>
+			<key>LSItemContentTypes</key><array><string>public.audio</string><string>public.movie</string></array>
+		</dict>
+	</array>
 </dict>
 </plist>
 PLIST

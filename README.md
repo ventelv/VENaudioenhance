@@ -3,7 +3,8 @@
 A free, native macOS app that does what Auphonic does, locally:
 
 - **Live:** cleans up whatever microphone you choose in real time and hands it to every app through a virtual input called **VEN Enhanced Mic**.
-- **File mastering:** drop in recordings for an Auphonic-style pass: noise and hum removal, AutoEQ, adaptive leveler, breath reduction, pause cutting, and loudness normalization with a true-peak limiter.
+- **File mastering:** drop in recordings for an Auphonic-style pass: noise and hum removal, AutoEQ, adaptive leveler, breath reduction, and loudness normalization with a true-peak limiter.
+- **Smart cutting and transcripts:** removes "um"/"uh", coughs and long pauses (you can review each cut first), and writes SRT/VTT/TXT/JSON transcripts. Speech recognition runs locally with whisper.cpp.
 
 ## Using it
 
@@ -22,7 +23,17 @@ In the default "When an app uses it" mode, VEN only opens your real mic while so
 | Record | Saves a *raw* and an *enhanced* WAV to `~/Music/VEN Recordings`. Drop the raw one into File Mastering for the best final result. |
 | Headphones | Lets you listen to yourself through the enhanced chain. |
 
-**File Mastering:** drag files into the window. Choose the loudness target (−16 LUFS for podcasts, −14 for YouTube/Spotify, −23 for EBU broadcast and so on), the format (WAV/AIFF/FLAC/ALAC/AAC, plus MP3 after `brew install lame`), and optionally a watch folder that processes new recordings automatically.
+**File Mastering:** drag files into the window or onto the app icon. Choose the loudness target (−16 LUFS for podcasts, −14 for YouTube/Spotify, −23 for EBU broadcast and so on), the format (WAV/AIFF/FLAC/ALAC/AAC, plus MP3 after `brew install lame`), and optionally a watch folder that processes new recordings automatically.
+
+**Cutting and transcripts** (in the Cutting and Transcript sections of the File Mastering settings):
+
+- **Filler words:** whisper.cpp finds "um", "uh", "er", "hmm" and similar words with word-level timing. Each cut is then placed on the audio itself: it runs from the gap before the filler to the gap after it, and leaves one natural pause.
+- **Coughs:** short, loud, explosive bursts that contain no words. They are found in the audio before noise reduction.
+- **Long pauses:** shortened to the length you choose.
+- **Review:** with "Let me review cuts" on, a list opens with every cut. You can hear each one with and without the edit, switch cuts off, or export them as an Audacity label track.
+- **Transcripts:** SRT, VTT, TXT and JSON files are saved next to the output. Their timings match the edited audio, and the words that were cut are left out.
+
+Speech recognition needs whisper.cpp (`brew install whisper-cpp`) and a model. Download one in **Setup → Speech recognition**: Large v3 Turbo (compact) is 547 MB and handles 99 languages. Models already on this Mac from other whisper.cpp apps are found automatically.
 
 ## Live signal chain
 
@@ -46,6 +57,9 @@ scripts/uninstall-driver.sh   # remove the virtual mic
 .build/release/ven-cli selftest                     # DSP checks (loudness meter, limiter, hum, NR, leveler…)
 .build/release/ven-cli devices                      # list devices, show which are in use
 .build/release/ven-cli process talk.wav --target -16 --format flac --cut-silence
+.build/release/ven-cli process talk.wav --cut-fillers --cut-coughs --transcript srt,txt --labels
+.build/release/ven-cli transcribe talk.wav --formats srt,vtt   # transcript only
+.build/release/ven-cli models                       # installed and downloadable speech models
 .build/release/ven-cli loudness file.wav            # EBU R128 loudness and true peak
 .build/release/ven-cli live --input "RØDE" --seconds 30   # run the live chain with stats
 .build/release/ven-cli record --device "VEN Enhanced Mic" --seconds 10 out.wav
@@ -58,12 +72,11 @@ scripts/uninstall-driver.sh   # remove the virtual mic
 | `Driver/VENMic/` | CoreAudio AudioServerPlugIn: a loopback device. The `vcnt` property counts the apps recording from it. |
 | `Sources/VENDSP/` | Real-time C DSP: the chain, limiter, loudness meter, resampler, and the live I/O core with lock-free rings. |
 | `Sources/CRNNoise/` | Vendored [RNNoise](https://github.com/xiph/rnnoise) 0.2 (BSD). |
-| `Sources/VENCore/` | Swift: devices, live engine and controller, mastering pipeline, audio file I/O, self-test. |
+| `Sources/VENCore/` | Swift: devices, live engine and controller, mastering pipeline, cutting, whisper.cpp transcripts, audio file I/O, self-test. |
 | `Sources/VENApp/` | SwiftUI menu bar app. |
 | `Sources/ven-cli/` | Command-line tool. |
 
 ## Roadmap
 
-- Transcripts (SRT/VTT/TXT) and automatic cutting of filler words and coughs, using local whisper.cpp, with a cut-review view.
 - "Studio" noise engine using DeepFilterNet. It handles keyboard clicks and other changing noises better.
 - Multitrack with crossgating and ducking, intro/outro with music ducking, video remux, and chapter markers.

@@ -15,8 +15,12 @@ func usage() -> Never {
       record --device NAME --seconds N OUT.wav  record any input (e.g. "VEN Enhanced Mic")
       loudness FILE...                          measure loudness (EBU R128)
       process IN [-o OUT] [--target LUFS] [--format wav24|flac|aac256|mp3|...]
-              [--cut-silence] [--no-autoeq] [--no-leveler] [--mono]
+              [--cut-fillers] [--cut-coughs] [--cut-silence] [--transcript srt,vtt,txt,json]
+              [--labels] [--model PATH] [--language en|auto] [--no-autoeq] [--no-leveler] [--mono]
                                                 Auphonic-style mastering of a file
+      transcribe IN [--formats srt,vtt,txt,json] [--model PATH] [--language en|auto]
+                                                transcript only, written next to IN
+      models                                    list speech models (and how to get one)
       demo SPEECH OUT.wav                       degrade a clean speech file for testing
     """)
     exit(2)
@@ -51,6 +55,18 @@ func runFor(_ seconds: Double, every: Double = 1, tick: () -> Void) {
 func describe(_ r: ven_loudness_result) -> String {
     String(format: "%.1f LUFS  LRA %.1f LU  true peak %.1f dBTP  max short-term %.1f LUFS",
            r.integrated_lufs, r.loudness_range_lu, r.true_peak_dbtp, r.max_short_term_lufs)
+}
+
+func transcriptFormats(_ list: String?) -> [Transcript.Format] {
+    guard let list else { return [] }
+    return list.split(separator: ",").map { name in
+        guard let f = Transcript.Format(rawValue: String(name)) else { fail("Unknown transcript format \(name). Options: srt, vtt, txt, json") }
+        return f
+    }
+}
+
+extension Array {
+    var nonEmpty: Self? { isEmpty ? nil : self }
 }
 
 switch args.first {
@@ -125,6 +141,11 @@ case "process":
         s.format = format
     }
     s.cutSilence = args.contains("--cut-silence")
+    s.cutFillers = args.contains("--cut-fillers")
+    s.cutCoughs = args.contains("--cut-coughs")
+    s.transcriptFormats = transcriptFormats(option("--transcript"))
+    s.speechModelPath = option("--model")
+    if let lang = option("--language") { s.language = lang }
     s.autoEQ = !args.contains("--no-autoeq")
     s.leveler = !args.contains("--no-leveler")
     if args.contains("--mono") { s.channels = .mono }
@@ -132,17 +153,52 @@ case "process":
     do {
         let start = Date()
         var lastStage = ""
-        let r = try Mastering.process(input: input, output: output, settings: s) { _, stage in
+        let progress: (Double, String) -> Void = { _, stage in
             if stage != lastStage { print("  \(stage)…"); lastStage = stage }
         }
+        let analysis = try Mastering.analyze(input: input, settings: s, progress: progress)
+        for c in analysis.cuts {
+            print(String(format: "  cut %@ %8.3f–%8.3f  %@", c.kind.label.padding(toLength: 7, withPad: " ", startingAt: 0), c.start, c.end, c.label))
+        }
+        if args.contains("--labels") {
+            let labels = output.deletingPathExtension().appendingPathExtension("cuts.txt")
+            try Cutting.audacityLabels(analysis.cuts).write(to: labels, atomically: true, encoding: .utf8)
+            print("Cut labels (Audacity): \(labels.path)")
+        }
+        let r = try Mastering.finish(analysis, output: output, progress: progress)
         print("Input:  \(describe(r.input))")
         print("Output: \(describe(r.output))")
         print("Hum: \(r.humHz == 0 ? "none" : "\(r.humHz) Hz")  AutoEQ: \(r.autoEQ.map { String(format: "%.0fHz %+.1f", $0.hz, $0.db) }.joined(separator: ", "))")
-        print("Breaths reduced: \(r.breathsReduced)  Pauses cut: \(r.pausesCut) (\(String(format: "%.1f", r.secondsCut)) s)")
+        print("Breaths reduced: \(r.breathsReduced)  \(MasteringQueue.summary(r))")
         print(String(format: "Processed %.1f s of audio in %.1f s → %@", r.durationIn, Date().timeIntervalSince(start), r.outputURL.path))
     } catch {
         fail(error.localizedDescription)
     }
+
+case "transcribe":
+    guard args.count >= 2 else { usage() }
+    let input = URL(fileURLWithPath: args[1])
+    guard let model = option("--model").map({ URL(fileURLWithPath: $0) }) ?? Speech.defaultModel() else {
+        fail("No speech model found. Run `ven-cli models`.")
+    }
+    do {
+        let audio = try AudioIO.read(input)
+        let start = Date()
+        let t = try Speech.transcribe(audio, model: model, language: option("--language") ?? "auto")
+        let files = try t.write(transcriptFormats(option("--formats")) .nonEmpty ?? [.srt, .txt], besides: input)
+        print(String(format: "%d words (%@) in %.1f s with %@", t.words.count, t.language, Date().timeIntervalSince(start), model.lastPathComponent))
+        files.forEach { print("  \($0.path)") }
+    } catch {
+        fail(error.localizedDescription)
+    }
+
+case "models":
+    print("whisper.cpp: \(Speech.whisperPath ?? "not installed — brew install whisper-cpp")")
+    let found = Speech.findModels()
+    print(found.isEmpty ? "No speech models installed." : "Installed models:")
+    for m in found { print("  \(m.path)\(m == Speech.defaultModel() ? "  (default)" : "")") }
+    print("Downloadable (in the app: Settings → Setup, or save to \(Speech.modelsFolder.path)):")
+    for m in WhisperModel.catalog { print("  \(m.name.padding(toLength: 26, withPad: " ", startingAt: 0)) \(m.sizeMB) MB  \(m.downloadURL.absoluteString)") }
 
 case "demo":
     guard args.count == 3 else { usage() }

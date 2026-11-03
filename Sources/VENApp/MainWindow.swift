@@ -158,6 +158,10 @@ struct SliderRow: View {
 struct MasteringTab: View {
     @EnvironmentObject var queue: MasteringQueue
     @State private var dropTargeted = false
+    @State private var reviewing: ReviewTarget?
+    @State private var postponed: Set<UUID> = []   // reviews the user put off with "Later"
+
+    struct ReviewTarget: Identifiable { let id: UUID }
 
     var body: some View {
         HSplitView {
@@ -170,6 +174,21 @@ struct MasteringTab: View {
 
             MasteringSettingsForm()
                 .frame(minWidth: 320, idealWidth: 340)
+        }
+        .sheet(item: $reviewing) { target in
+            if let analysis = queue.analyses[target.id], let job = queue.jobs.first(where: { $0.id == target.id }) {
+                CutReviewView(analysis: analysis, title: job.input.lastPathComponent,
+                              export: { cuts in queue.finishReview(target.id, cuts: cuts); reviewing = nil },
+                              discard: { queue.discardReview(target.id); reviewing = nil },
+                              close: { postponed.insert(target.id); reviewing = nil })
+            }
+        }
+        // When a file is ready for review, open it (one at a time; "Later" leaves it in the queue).
+        .onReceive(queue.$jobs) { jobs in
+            guard reviewing == nil else { return }
+            if let next = jobs.first(where: { if case .needsReview = $0.state { return !postponed.contains($0.id) }; return false }) {
+                reviewing = ReviewTarget(id: next.id)
+            }
         }
     }
 
@@ -205,7 +224,7 @@ struct MasteringTab: View {
             if queue.jobs.isEmpty {
                 Text("Nothing processed yet.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(queue.jobs.reversed()) { job in JobRow(job: job) }
+                List(queue.jobs.reversed()) { job in JobRow(job: job) { postponed.remove(job.id); reviewing = ReviewTarget(id: job.id) } }
                     .listStyle(.inset(alternatesRowBackgrounds: true))
             }
         }
@@ -221,6 +240,7 @@ struct MasteringTab: View {
 
 struct JobRow: View {
     let job: MasteringQueue.Job
+    let review: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -236,6 +256,12 @@ struct JobRow: View {
             case .queued: Text("Waiting").font(.caption).foregroundStyle(.secondary)
             case .running(let f, let stage):
                 ProgressView(value: f) { Text(stage).font(.caption) }
+            case .needsReview(let n):
+                HStack {
+                    Label("\(n) suggested cut\(n == 1 ? "" : "s") to check", systemImage: "scissors").font(.caption)
+                    Spacer()
+                    Button("Review…", action: review).controlSize(.small).buttonStyle(.borderedProminent)
+                }
             case .done(let summary):
                 Label(summary, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
             case .failed(let msg):
@@ -295,12 +321,34 @@ struct MasteringSettingsForm: View {
                 }
             }
             Section("Cutting") {
+                Toggle("Cut filler words (um, uh, er…)", isOn: $queue.settings.cutFillers)
+                Toggle("Cut coughs", isOn: $queue.settings.cutCoughs)
                 Toggle("Shorten long pauses", isOn: $queue.settings.cutSilence)
                 if queue.settings.cutSilence {
                     Stepper(value: $queue.settings.maxPauseSeconds, in: 0.3...3, step: 0.1) {
                         Text(String(format: "Keep at most %.1f s", queue.settings.maxPauseSeconds))
                     }
                 }
+                if queue.settings.cutsAnything {
+                    Toggle("Let me review cuts before export", isOn: $queue.settings.reviewCuts)
+                }
+            }
+            Section("Transcript") {
+                HStack {
+                    ForEach(Transcript.Format.allCases) { f in
+                        Toggle(f.label, isOn: Binding(
+                            get: { queue.settings.transcriptFormats.contains(f) },
+                            set: { on in
+                                queue.settings.transcriptFormats.removeAll { $0 == f }
+                                if on { queue.settings.transcriptFormats.append(f) }
+                            }))
+                        .toggleStyle(.checkbox)
+                    }
+                }
+                Picker("Language", selection: $queue.settings.language) {
+                    ForEach(SpeechLanguage.all, id: \.code) { Text($0.name).tag($0.code) }
+                }
+                SpeechStatus()
             }
             Section("Watch folder") {
                 FolderRow(title: "Auto-process", url: $queue.watchFolder, placeholder: "Off")
@@ -361,6 +409,7 @@ struct SetupTab: View {
                     Button("Open folder") { NSWorkspace.shared.open(live.recordingsFolder) }
                 }
             }
+            SpeechModelsSection()
             Section("Command line") {
                 Text("ven-cli process FILE --target -16 --format flac masters a file from Terminal; ven-cli selftest checks the DSP.")
                     .font(.caption).foregroundStyle(.secondary)

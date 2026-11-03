@@ -8,6 +8,7 @@ public final class MasteringQueue: ObservableObject {
         public enum State: Equatable {
             case queued
             case running(Double, String)
+            case needsReview(Int)   // number of suggested cuts
             case done(String)       // one-line summary
             case failed(String)
         }
@@ -22,6 +23,9 @@ public final class MasteringQueue: ObservableObject {
     @Published public var outputFolder: URL? { didSet { save() } }   // nil = next to the original
     @Published public var watchFolder: URL? { didSet { save(); restartWatching() } }
 
+    /// Processed files waiting for their cuts to be reviewed.
+    public private(set) var analyses: [UUID: MasteringAnalysis] = [:]
+
     private var running = false
     private var watchTimer: Timer?
     private var seenSizes: [URL: Int] = [:]
@@ -29,7 +33,7 @@ public final class MasteringQueue: ObservableObject {
     private let defaults = UserDefaults.standard
 
     public init() {
-        if let data = defaults.data(forKey: "master.settings"), let s = try? JSONDecoder().decode(MasteringSettings.self, from: data) {
+        if let data = defaults.data(forKey: "master.settings"), let s = MasteringSettings.decode(data) {
             settings = s
         } else {
             settings = MasteringSettings()
@@ -67,22 +71,17 @@ public final class MasteringQueue: ObservableObject {
         let id = job.id
 
         Task.detached(priority: .userInitiated) {
-            var lastReport = Date.distantPast
-            let result: Result<MasteringReport, Error> = Result {
-                try Mastering.process(input: job.input, output: output, settings: settings) { fraction, stage in
-                    guard Date().timeIntervalSince(lastReport) > 0.1 || fraction >= 1 else { return }
-                    lastReport = Date()
-                    Task { @MainActor in self.update(id, .running(fraction, stage)) }
-                }
+            let report = Self.throttled { fraction, stage in Task { @MainActor in self.update(id, .running(fraction, stage)) } }
+            let result: Result<MasteringAnalysis, Error> = Result {
+                try Mastering.analyze(input: job.input, settings: settings, progress: report)
             }
             await MainActor.run {
                 switch result {
-                case .success(let r):
-                    let summary = String(format: "%.1f → %.1f LUFS, peak %.1f dBTP", r.input.integrated_lufs, r.output.integrated_lufs,
-                                         r.output.true_peak_dbtp)
-                        + (r.humHz > 0 ? ", \(r.humHz) Hz hum removed" : "")
-                        + (r.pausesCut > 0 ? String(format: ", %.0f s of pauses cut", r.secondsCut) : "")
-                    self.update(id, .done(summary))
+                case .success(let analysis) where settings.reviewCuts && !analysis.cuts.isEmpty:
+                    self.analyses[id] = analysis
+                    self.update(id, .needsReview(analysis.cuts.count))
+                case .success(let analysis):
+                    self.export(id, analysis)
                 case .failure(let e):
                     self.update(id, .failed(e.localizedDescription))
                 }
@@ -90,6 +89,55 @@ public final class MasteringQueue: ObservableObject {
                 self.runNext()
             }
         }
+    }
+
+    /// Exports a reviewed job with the cuts as the user left them.
+    public func finishReview(_ id: UUID, cuts: [EditCut]) {
+        guard let analysis = analyses.removeValue(forKey: id) else { return }
+        analysis.cuts = cuts
+        export(id, analysis)
+    }
+
+    public func discardReview(_ id: UUID) {
+        analyses[id] = nil
+        update(id, .failed("Not exported"))
+    }
+
+    private func export(_ id: UUID, _ analysis: MasteringAnalysis) {
+        guard let output = jobs.first(where: { $0.id == id })?.output else { return }
+        update(id, .running(0.95, "Exporting"))
+        Task.detached(priority: .userInitiated) {
+            let report = Self.throttled { fraction, stage in Task { @MainActor in self.update(id, .running(fraction, stage)) } }
+            let result = Result { try Mastering.finish(analysis, output: output, progress: report) }
+            await MainActor.run {
+                switch result {
+                case .success(let r): self.update(id, .done(Self.summary(r)))
+                case .failure(let e): self.update(id, .failed(e.localizedDescription))
+                }
+            }
+        }
+    }
+
+    /// Passes progress on at most 10 times a second.
+    nonisolated static func throttled(_ body: @escaping (Double, String) -> Void) -> (Double, String) -> Void {
+        var last = Date.distantPast
+        return { fraction, stage in
+            guard Date().timeIntervalSince(last) > 0.1 || fraction >= 1 else { return }
+            last = Date()
+            body(fraction, stage)
+        }
+    }
+
+    public nonisolated static func summary(_ r: MasteringReport) -> String {
+        var parts = [String(format: "%.1f → %.1f LUFS, peak %.1f dBTP", r.input.integrated_lufs, r.output.integrated_lufs, r.output.true_peak_dbtp)]
+        if r.humHz > 0 { parts.append("\(r.humHz) Hz hum removed") }
+        let cuts = EditCut.Kind.allCases.compactMap { k -> String? in
+            guard let n = r.cutCounts[k], n > 0 else { return nil }
+            return "\(n) \(k.label.lowercased())\(n == 1 ? "" : "s")"
+        }
+        if !cuts.isEmpty { parts.append(String(format: "cut %@ (%.1f s)", cuts.joined(separator: ", "), r.secondsCut)) }
+        if !r.transcriptFiles.isEmpty { parts.append("transcript " + r.transcriptFiles.map { $0.pathExtension.uppercased() }.joined(separator: "/")) }
+        return parts.joined(separator: ", ")
     }
 
     private func update(_ id: UUID, _ state: Job.State) {

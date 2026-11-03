@@ -6,14 +6,21 @@ import VENCore
 struct VENApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var live: LiveController
-    @StateObject private var queue = MasteringQueue()
+    @StateObject private var queue: MasteringQueue
+    @StateObject private var speech = SpeechModels()
     @StateObject private var system: SystemSupport
 
     init() {
         let live = LiveController()
         let system = SystemSupport()
+        let queue = MasteringQueue()
         system.installCoughKey(live)
+        AppDelegate.openFiles = { urls in
+            queue.add(urls)
+            NotificationCenter.default.post(name: .venShowMainWindow, object: nil)
+        }
         _live = StateObject(wrappedValue: live)
+        _queue = StateObject(wrappedValue: queue)
         _system = StateObject(wrappedValue: system)
     }
 
@@ -33,6 +40,7 @@ struct VENApp: App {
                 .environmentObject(live)
                 .environmentObject(queue)
                 .environmentObject(system)
+                .environmentObject(speech)
                 .frame(minWidth: 760, minHeight: 560)
         }
         .defaultSize(width: 860, height: 640)
@@ -52,11 +60,18 @@ extension Notification.Name {
     static let venShowMainWindow = Notification.Name("VENShowMainWindow")
 }
 
-/// Opening the app again from Finder or Spotlight shows the main window (there's no Dock icon).
+/// Opening the app again from Finder or Spotlight shows the main window (there's no Dock icon). Files dropped
+/// on the app icon or opened with it go to the mastering queue.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static var openFiles: (([URL]) -> Void)?
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         NotificationCenter.default.post(name: .venShowMainWindow, object: nil)
         return true
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        Self.openFiles?(urls)
     }
 }
 
