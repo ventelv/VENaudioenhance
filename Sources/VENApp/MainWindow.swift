@@ -38,6 +38,13 @@ struct LiveTab: View {
                     PresetChips()
                 }
                 Section("Cleanup") {
+                    if VoiceIsolation.isAvailable {
+                        StageToggle("Voice isolation", isOn: $live.settings.voiceIsolation) {
+                            SliderRow(value: $live.settings.voiceIsolationStrength, range: 0...1, format: "%.0f%%", scale: 100)
+                            Text("Keeps only the voice close to the mic: kids, TV and people in the background are removed. Adds about 55 ms of delay.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     StageToggle("Rumble filter", isOn: $live.settings.highPassEnabled) {
                         SliderRow(value: $live.settings.highPassHz, range: 40...200, format: "%.0f Hz")
                     }
@@ -320,6 +327,14 @@ struct MasteringSettingsForm: View {
                 FolderRow(title: "Save to", url: $queue.outputFolder, placeholder: "Next to the original")
             }
             Section("Cleanup") {
+                if VoiceIsolation.isAvailable {
+                    Toggle("Voice isolation", isOn: $queue.settings.voiceIsolation)
+                    if queue.settings.voiceIsolation {
+                        SliderRow(value: $queue.settings.voiceIsolationStrength, range: 0...1, format: "%.0f%%", scale: 100)
+                        Text("Keeps only the main voice: kids, TV and people in the background are removed.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 Toggle("Noise reduction", isOn: $queue.settings.noiseReduction)
                 if queue.settings.noiseReduction {
                     SliderRow(value: $queue.settings.noiseStrength, range: 0...1, format: "%.0f%%", scale: 100)

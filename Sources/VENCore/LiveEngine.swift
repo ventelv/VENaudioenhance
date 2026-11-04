@@ -24,9 +24,13 @@ public final class LiveEngine {
     private var outputUnit: AudioUnit?
     private var monitorUnit: AudioUnit?
     private var recorder: TapRecorder?
-    /// DeepFilterNet for the Studio engine; freed after the core (and its worker thread) is gone.
+    /// Voice isolation and DeepFilterNet (Studio engine), run in that order on the core's worker thread;
+    /// freed after the core (and its worker thread) is gone.
+    private var isolation: VoiceIsolation.LiveState?
     private var studio: StudioDenoiser.LiveState?
+    private var isolationStage: Int32?, studioStage: Int32?
     public var usesStudio: Bool { studio != nil }
+    public var usesIsolation: Bool { isolation != nil }
 
     public init(input: AudioDevice, output: AudioDeviceID, channel: Int? = nil, settings: VoiceSettings) throws {
         self.input = input
@@ -54,10 +58,18 @@ public final class LiveEngine {
 
         core = ven_live_create(inputRate, Int32(inputChannels), Int32(channel ?? -1))
         ven_live_set_input_unit(core, unit)
+        var stages: [ven_live_stage] = []
+        if settings.voiceIsolation, let iso = VoiceIsolation.LiveState() {
+            isolation = iso
+            isolationStage = Int32(stages.count)
+            stages.append(iso.stage)
+        }
         if settings.studioNoise, let st = StudioDenoiser.LiveState() {
             studio = st
-            ven_live_start_worker(core, st.process, st.setAtten, st.state, Int32(st.delay))
+            studioStage = Int32(stages.count)
+            stages.append(ven_live_stage(process: st.process, set_param: st.setAtten, state: st.state, delay: Int32(st.delay)))
         }
+        if !stages.isEmpty { ven_live_start_worker(core, stages, Int32(stages.count)) }
         apply(settings)
 
         var inputCallback = AURenderCallbackStruct(inputProc: ven_live_input_proc, inputProcRefCon: UnsafeMutableRawPointer(core))
@@ -94,11 +106,14 @@ public final class LiveEngine {
 
     public func apply(_ settings: VoiceSettings) {
         var params = settings.params
-        if studio != nil {
+        if let i = isolationStage {
+            ven_live_set_stage(core, i, settings.voiceIsolation && !settings.bypass ? 1 : 0, settings.voiceIsolationStrength)
+        }
+        if let i = studioStage {
             // DeepFilterNet does the denoising; RNNoise in the chain then only detects speech.
             params.nr_enabled = 0
             let on = settings.noiseReductionEnabled && !settings.bypass
-            ven_live_set_denoise(core, on ? 1 : 0, StudioDenoiser.attenuationLimit(settings.noiseReductionStrength))
+            ven_live_set_stage(core, i, on ? 1 : 0, StudioDenoiser.attenuationLimit(settings.noiseReductionStrength))
         }
         ven_chain_set_params(ven_live_chain(core), &params)
     }
@@ -117,7 +132,7 @@ public final class LiveEngine {
 
     /// Processing delay inside the chain, plus the input backlog the drift controller keeps.
     public var latencyMs: Double {
-        Double(ven_chain_latency(ven_live_chain(core)) + Int32(studio?.delay ?? 0)) / 48.0 + stats().ring_fill_ms
+        Double(ven_chain_latency(ven_live_chain(core)) + ven_live_stage_delay(core)) / 48.0 + stats().ring_fill_ms
     }
 
     // MARK: Headphone monitor

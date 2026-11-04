@@ -35,6 +35,17 @@ struct MenuPanel: View {
                 }
                 .toggleStyle(.switch)
 
+                if VoiceIsolation.isAvailable {
+                    Toggle(isOn: $live.settings.voiceIsolation) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Voice isolation").font(.body.weight(.medium))
+                            Text("Removes kids, TV and other voices around you").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .disabled(live.settings.bypass)
+                }
+
                 LiveMeters(compact: true)
 
                 HStack(spacing: 8) {

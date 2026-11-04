@@ -39,6 +39,10 @@ public struct VoiceSettings: Codable, Equatable {
     /// DeepFilterNet ("Studio") instead of RNNoise, when it's installed. Off by default: it adds delay and CPU.
     public var studioNoise = false
 
+    /// Apple's voice isolation before everything else: removes background voices (kids, TV, other people).
+    public var voiceIsolation = false
+    public var voiceIsolationStrength: Float = 1
+
     public var voiceEQEnabled = true
     public var voiceEQAmount: Float = 0.5
 

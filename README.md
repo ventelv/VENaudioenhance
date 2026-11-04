@@ -42,6 +42,8 @@ In the default "When an app uses it" mode, VEN only opens your real mic while so
 
 **Chapters:** put "name.chapters.txt" next to "name.wav", with one line per chapter such as `0:00 Intro` or `12:30 Interview` (an Audacity label export also works). The chapters are shifted to match cuts and the intro. They are embedded in M4A and video output and saved as Podcasting 2.0 JSON and as text.
 
+**Voice isolation:** removes the voices around you (kids playing or shouting, a TV, people talking in the next room) as well as noise, and keeps only the voice close to the mic. It uses the neural model built into macOS 13 and later (the one behind Voice Isolation in FaceTime), so there's nothing to install. Turn it on in the menu bar panel, under Live Mic → Cleanup, or under File Mastering → Cleanup. In tests with a recorded voice and screaming, chattering kids across the room, it removed about 40 dB of the kids in the pauses and about 20 dB while the voice was talking, and every word stayed intact. On the live mic it adds about 55 ms of delay and uses about 10% of one CPU core. It can't take a child's voice out from under yours when you both speak at the same moment, but it turns it well down. Compare with `ven-cli denoise talk.wav out.wav --isolate`.
+
 **Studio noise engine (optional):** DeepFilterNet 3 removes changing noise, like keyboards, traffic and room echo, better than the standard engine. Build it once with Rust (`brew install rust`):
 
 ```bash
@@ -81,6 +83,7 @@ scripts/uninstall-driver.sh   # remove the virtual mic
 .build/release/ven-cli process talk.mov --cut-fillers --intro jingle.wav --intro-overlap 3 --chapters talk.chapters.txt
 .build/release/ven-cli multitrack host.wav guest.wav --names Host,Guest --music bed.mp3 --transcript txt -o episode.wav
 .build/release/ven-cli process talk.wav --studio      # DeepFilterNet engine
+.build/release/ven-cli process talk.wav --isolate     # remove background voices (kids, TV)
 .build/release/ven-cli loudness file.wav            # EBU R128 loudness and true peak
 .build/release/ven-cli live --input "RØDE" --seconds 30   # run the live chain with stats
 .build/release/ven-cli record --device "VEN Enhanced Mic" --seconds 10 out.wav

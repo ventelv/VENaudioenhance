@@ -85,4 +85,43 @@ extension SelfTest {
             return Result(name: name, passed: false, detail: error.localizedDescription)
         }
     }
+
+    static func voiceIsolation() -> Result {
+        let name = "Voice isolation keeps the voice, removes a scream"
+        guard VoiceIsolation.isAvailable else { return Result(name: name, passed: true, detail: "not on this macOS, skipped") }
+        // A real voice (the system's speech synthesizer), then a pause with a child-like scream across the room.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ven-selftest-\(getpid())")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let speechURL = folder.appendingPathComponent("voice.aiff")
+        let say = Process()
+        say.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        say.arguments = ["-o", speechURL.path, "This is my voice, and it should come through clearly."]
+        do {
+            try say.run()
+            say.waitUntilExit()
+            let voice = try AudioIO.read(speechURL).array(0).map { $0 * 0.5 }
+            let rate = 48000.0
+            let screamStart = voice.count + Int(0.5 * rate), screamLength = Int(1.2 * rate)
+            var x = voice + [Float](repeating: 0, count: screamStart - voice.count + screamLength + Int(0.5 * rate))
+            var phase = 0.0
+            for i in 0..<screamLength {
+                let t = Double(i) / rate
+                phase += 2 * .pi * (700 + 250 * sin(2 * .pi * 0.8 * t) + 20 * sin(2 * .pi * 6 * t)) / rate
+                let env = min(1, t / 0.05, (Double(screamLength) / rate - t) / 0.1)
+                x[screamStart + i] += Float(0.12 * env * (1...12).reduce(0.0) { $0 + sin(Double($1) * phase) / pow(Double($1), 1.2) })
+            }
+            let input = PlanarBuffer([x])
+            let out = try VoiceIsolation.process(input, strength: 1) { _ in }
+            let y = out.array(0)
+            let lag = StudioDenoiser.measureDelay(x, y + [Float](repeating: 0, count: 600), maxLag: 500)
+            let v = 0..<voice.count, sc = screamStart..<(screamStart + screamLength)
+            let voiceChange = rmsDB(y[v]) - rmsDB(x[v]), screamChange = rmsDB(y[sc]) - rmsDB(x[sc])
+            let ok = lag <= 2 && voiceChange > -3 && voiceChange < 1 && screamChange < -20
+            return Result(name: name, passed: ok,
+                          detail: String(format: "offset %d samples, voice %+.1f dB, scream %+.1f dB", lag, voiceChange, screamChange))
+        } catch {
+            return Result(name: name, passed: false, detail: error.localizedDescription)
+        }
+    }
 }

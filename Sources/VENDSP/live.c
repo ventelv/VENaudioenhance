@@ -80,6 +80,14 @@ void ven_ring_clear(ven_ring *r) {
 #define MAX_IN_CHANNELS 64
 #define FIFO_CAP 4096
 
+typedef struct {
+    ven_live_stage st;
+    _Atomic float mix_target, param;
+    float mix, param_applied;
+    float *dry;                    // the stage's input, delayed to line up with its output
+    int dry_pos;
+} worker_stage;
+
 struct ven_live {
     double in_rate;
     int in_channels, in_channel;
@@ -112,13 +120,8 @@ struct ven_live {
     // Studio mode (worker thread).
     _Atomic int worker_on, worker_run;
     pthread_t worker;
-    ven_denoise_fn df_fn;
-    ven_denoise_atten_fn df_atten;
-    void *df_state;
-    _Atomic float df_mix_target, df_atten_db;
-    float df_mix, df_atten_applied;
-    float *raw_delay;              // the raw mic, delayed to line up with the denoiser's output
-    int raw_delay_len, raw_delay_pos;
+    worker_stage stages[VEN_LIVE_MAX_STAGES];
+    int stage_count;
     ven_ring *out_ring;
     _Atomic int out_target;
     int out_primed;
@@ -151,7 +154,7 @@ void ven_live_destroy(ven_live *l) {
     if (!l) return;
     ven_live_stop_worker(l);
     ven_ring_destroy(l->out_ring);
-    free(l->raw_delay);
+    for (int k = 0; k < VEN_LIVE_MAX_STAGES; k++) free(l->stages[k].dry);
     ven_ring_destroy(l->in_ring);
     ven_ring_destroy(l->raw_tap);
     ven_ring_destroy(l->enh_tap);
@@ -267,7 +270,7 @@ static int make_block(ven_live *l) {
 
 // MARK: - Studio worker
 
-// Asks the scheduler for 4 ms of every 10 ms, like an audio thread (the denoiser needs ~1.5 ms per block).
+// Asks the scheduler for 4 ms of every 10 ms, like an audio thread (DeepFilterNet needs ~1.5 ms per block).
 static void make_time_constrained(void) {
     mach_timebase_info_data_t tb;
     mach_timebase_info(&tb);
@@ -281,7 +284,7 @@ static void make_time_constrained(void) {
 
 static void *worker_main(void *arg) {
     ven_live *l = arg;
-    pthread_setname_np("VEN studio denoiser");
+    pthread_setname_np("VEN studio worker");
     make_time_constrained();
     double fill_avg = -1;
     while (atomic_load(&l->worker_run)) {
@@ -296,21 +299,25 @@ static void *worker_main(void *arg) {
         int taps = atomic_load_explicit(&l->taps_on, memory_order_relaxed);
         if (taps) ven_ring_write(l->raw_tap, l->wblock, VEN_BLOCK);
 
-        float atten = atomic_load(&l->df_atten_db);
-        if (l->df_atten && atten != l->df_atten_applied) {
-            l->df_atten(l->df_state, atten);
-            l->df_atten_applied = atten;
-        }
-        l->df_fn(l->df_state, l->wblock, l->wden);
-        // Blend with the equally delayed raw mic (Enhance off, or noise reduction off).
-        float target = atomic_load(&l->df_mix_target);
-        float step = 1.0f / (0.02f * VEN_SAMPLE_RATE);
-        for (int i = 0; i < VEN_BLOCK; i++) {
-            float raw = l->raw_delay[l->raw_delay_pos];
-            l->raw_delay[l->raw_delay_pos] = l->wblock[i];
-            l->raw_delay_pos = (l->raw_delay_pos + 1) % l->raw_delay_len;
-            l->df_mix += fmaxf(-step, fminf(step, target - l->df_mix));
-            l->wblock[i] = l->df_mix * l->wden[i] + (1 - l->df_mix) * raw;
+        for (int k = 0; k < l->stage_count; k++) {
+            worker_stage *st = &l->stages[k];
+            float param = atomic_load(&st->param);
+            if (st->st.set_param && param != st->param_applied) {
+                st->st.set_param(st->st.state, param);
+                st->param_applied = param;
+            }
+            st->st.process(st->st.state, l->wblock, l->wden);
+            // Blend with the equally delayed input (Enhance off, or this stage off).
+            float target = atomic_load(&st->mix_target);
+            float step = 1.0f / (0.02f * VEN_SAMPLE_RATE);
+            int len = st->st.delay > 0 ? st->st.delay : 1;
+            for (int i = 0; i < VEN_BLOCK; i++) {
+                float dry = st->dry[st->dry_pos];
+                st->dry[st->dry_pos] = l->wblock[i];
+                st->dry_pos = st->dry_pos + 1 == len ? 0 : st->dry_pos + 1;
+                st->mix += fmaxf(-step, fminf(step, target - st->mix));
+                l->wblock[i] = st->mix * l->wden[i] + (1 - st->mix) * dry;
+            }
         }
 
         float *chans[1] = { l->wblock };
@@ -333,16 +340,17 @@ static void *worker_main(void *arg) {
     return NULL;
 }
 
-int ven_live_start_worker(ven_live *l, ven_denoise_fn fn, ven_denoise_atten_fn atten, void *state, int delay) {
-    if (atomic_load(&l->worker_on)) return 0;
-    l->df_fn = fn;
-    l->df_atten = atten;
-    l->df_state = state;
-    l->df_atten_applied = NAN;
-    l->df_mix = atomic_load(&l->df_mix_target);
-    l->raw_delay_len = delay > 0 ? delay : 1;
-    l->raw_delay = calloc(l->raw_delay_len, sizeof(float));
-    l->raw_delay_pos = 0;
+int ven_live_start_worker(ven_live *l, const ven_live_stage *stages, int count) {
+    if (atomic_load(&l->worker_on) || count < 1 || count > VEN_LIVE_MAX_STAGES) return -1;
+    l->stage_count = count;
+    for (int k = 0; k < count; k++) {
+        l->stages[k].st = stages[k];
+        l->stages[k].param_applied = NAN;
+        l->stages[k].mix = atomic_load(&l->stages[k].mix_target);
+        free(l->stages[k].dry);
+        l->stages[k].dry = calloc(stages[k].delay > 0 ? stages[k].delay : 1, sizeof(float));
+        l->stages[k].dry_pos = 0;
+    }
     if (!l->out_ring) l->out_ring = ven_ring_create(VEN_SAMPLE_RATE / 2);
     ven_ring_clear(l->out_ring);
     l->out_primed = 0;
@@ -363,9 +371,16 @@ void ven_live_stop_worker(ven_live *l) {
     atomic_store(&l->worker_on, 0);
 }
 
-void ven_live_set_denoise(ven_live *l, float mix, float atten_db) {
-    atomic_store(&l->df_mix_target, mix);
-    atomic_store(&l->df_atten_db, atten_db);
+void ven_live_set_stage(ven_live *l, int index, float mix, float param) {
+    if (index < 0 || index >= VEN_LIVE_MAX_STAGES) return;
+    atomic_store(&l->stages[index].mix_target, mix);
+    atomic_store(&l->stages[index].param, param);
+}
+
+int ven_live_stage_delay(ven_live *l) {
+    int d = 0;
+    for (int k = 0; k < l->stage_count; k++) d += l->stages[k].st.delay;
+    return atomic_load(&l->worker_on) ? d : 0;
 }
 
 // Studio mode output: hand out what the worker finished, keeping a cushion for its scheduling jitter.

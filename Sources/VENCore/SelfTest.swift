@@ -27,6 +27,7 @@ public enum SelfTest {
             crossgateBleed(),
             chapterTiming(),
             studioEngine(),
+            voiceIsolation(),
         ]
     }
 

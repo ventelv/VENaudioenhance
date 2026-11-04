@@ -38,7 +38,7 @@ public final class LiveController: ObservableObject {
             engine?.apply(settings)
             if settings.mute == oldValue.mute { save() }
             // Switching noise engines swaps how the audio is processed, so the engine is rebuilt.
-            if settings.studioNoise != oldValue.studioNoise { restart() }
+            if settings.studioNoise != oldValue.studioNoise || settings.voiceIsolation != oldValue.voiceIsolation { restart() }
         }
     }
     @Published public var presetID: String? { didSet { save() } }
@@ -94,6 +94,10 @@ public final class LiveController: ObservableObject {
         var s = preset.settings
         s.bypass = settings.bypass
         s.mute = settings.mute
+        // Presets set the sound; which engines run stays the user's choice.
+        s.studioNoise = settings.studioNoise
+        s.voiceIsolation = settings.voiceIsolation
+        s.voiceIsolationStrength = settings.voiceIsolationStrength
         settings = s
         presetID = preset.id
     }

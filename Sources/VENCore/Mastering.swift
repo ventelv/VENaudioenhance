@@ -15,6 +15,9 @@ public struct MasteringSettings: Codable, Equatable {
     public var noiseReduction = true
     public var noiseStrength: Float = 0.9
     public var noiseEngine: NoiseEngine = .standard
+    /// Apple's voice isolation first: removes background voices (kids, TV, other people) and noise.
+    public var voiceIsolation = false
+    public var voiceIsolationStrength: Float = 1
     public var autoEQ = true
     public var deEsser = true
     public var deEsserAmount: Float = 0.5
@@ -214,6 +217,11 @@ public enum Mastering {
         cleanup.compressorEnabled = false
         cleanup.limiterEnabled = false
         let original = audio
+        // Voice isolation goes first, so the speech detection below only hears the main voice.
+        if s.voiceIsolation && VoiceIsolation.isAvailable {
+            progress(0, "Isolating the voice")
+            audio = try VoiceIsolation.process(audio, strength: s.voiceIsolationStrength) { progress(0.15 * $0, "Isolating the voice") }
+        }
         var (clean, vad) = runChain(audio, settings: cleanup, useNR: true) { progress((studio ? 0.2 : 0.7) * $0, cleanupStage) }
         if studio {
             clean = try StudioDenoiser.process(clean, strength: s.noiseStrength) { progress(0.2 + 0.5 * $0, cleanupStage) }
@@ -284,9 +292,11 @@ public enum Mastering {
     }
 
     /// Noise reduction alone (plus the rumble filter), at the input's level: for comparing engines.
-    public static func denoise(input: URL, output: URL, engine: MasteringSettings.NoiseEngine, strength: Float = 1) throws {
+    public static func denoise(input: URL, output: URL, engine: MasteringSettings.NoiseEngine, strength: Float = 1,
+                               isolate: Bool = false) throws {
         var s = MasteringSettings()
         s.noiseEngine = engine
+        s.voiceIsolation = isolate
         s.noiseStrength = strength
         s.humMode = .off
         s.autoEQ = false

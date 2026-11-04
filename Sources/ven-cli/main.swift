@@ -10,14 +10,14 @@ func usage() -> Never {
 
       selftest                                  run the DSP checks
       devices                                   list audio devices
-      live [--input NAME] [--seconds N] [--preset ID] [--bypass] [--standard]
+      live [--input NAME] [--seconds N] [--preset ID] [--bypass] [--standard] [--isolate]
                                                 feed the enhanced mic into VEN Enhanced Mic
       record --device NAME --seconds N OUT.wav  record any input (e.g. "VEN Enhanced Mic")
       loudness FILE...                          measure loudness (EBU R128)
       process IN [-o OUT] [--target LUFS] [--format wav24|flac|aac256|mp3|...]
               [--cut-fillers] [--cut-coughs] [--cut-silence] [--transcript srt,vtt,txt,json]
               [--labels] [--model PATH] [--language en|auto] [--no-autoeq] [--no-leveler] [--mono]
-              [--studio] [--intro FILE] [--outro FILE] [--intro-overlap S] [--outro-overlap S]
+              [--studio] [--isolate] [--intro FILE] [--outro FILE] [--intro-overlap S] [--outro-overlap S]
               [--chapters FILE] [--no-video]
                                                 Auphonic-style mastering of a file
       multitrack TRACK... [--names Host,Guest] [--music FILE]... [-o OUT] [process options]
@@ -25,7 +25,7 @@ func usage() -> Never {
       transcribe IN [--formats srt,vtt,txt,json] [--model PATH] [--language en|auto]
                                                 transcript only, written next to IN
       models                                    list speech models (and how to get one)
-      denoise IN OUT.wav [--studio]             noise reduction only (compare the two engines)
+      denoise IN OUT.wav [--studio] [--isolate] noise reduction only (compare the engines)
       demo SPEECH OUT.wav                       degrade a clean speech file for testing
     """)
     exit(2)
@@ -97,12 +97,13 @@ case "live":
     var settings = VoicePreset.all.first { $0.id == option("--preset") }?.settings ?? VoiceSettings()
     settings.bypass = args.contains("--bypass")
     if args.contains("--standard") { settings.studioNoise = false }
+    if args.contains("--isolate") { settings.voiceIsolation = true }
     let seconds = Double(option("--seconds") ?? "") ?? 30
     do {
         let engine = try LiveEngine(input: mic, output: ven.id, settings: settings)
         try engine.start()
         print("Live: \(mic.name) (\(Int(engine.inputRate)) Hz, \(engine.inputChannels) ch) → VEN Enhanced Mic for \(Int(seconds)) s"
-              + (engine.usesStudio ? ", Studio engine" : ", standard engine"))
+              + (engine.usesStudio ? ", Studio engine" : ", standard engine") + (engine.usesIsolation ? ", voice isolation" : ""))
         runFor(seconds) {
             let m = engine.meters(), s = engine.stats()
             print(String(format: "in %6.1f dB  out %6.1f dB  vad %.2f  lev %+5.1f dB  comp -%4.1f  lim -%4.1f  hum %2.0f Hz  backlog %4.1f ms  drift %+.4f%%  xruns %llu/%llu  apps %d",
@@ -165,6 +166,7 @@ case "process", "multitrack":
     s.speechModelPath = option("--model")
     if let lang = option("--language") { s.language = lang }
     if args.contains("--studio") { s.noiseEngine = .studio }
+    if args.contains("--isolate") { s.voiceIsolation = true }
     s.introPath = option("--intro")
     s.outroPath = option("--outro")
     if let v = option("--intro-overlap").flatMap(Double.init) { s.introOverlap = v }
@@ -218,7 +220,7 @@ case "denoise":
     guard args.count >= 3 else { usage() }
     do {
         try Mastering.denoise(input: URL(fileURLWithPath: args[1]), output: URL(fileURLWithPath: args[2]),
-                              engine: args.contains("--studio") ? .studio : .standard)
+                              engine: args.contains("--studio") ? .studio : .standard, isolate: args.contains("--isolate"))
     } catch {
         fail(error.localizedDescription)
     }
