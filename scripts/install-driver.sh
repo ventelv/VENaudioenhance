@@ -6,6 +6,7 @@ ROOT="${0:A:h:h}"
 "$ROOT/scripts/build-driver.sh"
 sudo rm -rf /Library/Audio/Plug-Ins/HAL/VENMic.driver
 sudo cp -R "$ROOT/build/VENMic.driver" /Library/Audio/Plug-Ins/HAL/
+sudo xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/HAL/VENMic.driver
 sudo chown -R root:wheel /Library/Audio/Plug-Ins/HAL/VENMic.driver
 sudo killall coreaudiod
 echo "Installed. 'VEN Enhanced Mic' should now appear as an input device."

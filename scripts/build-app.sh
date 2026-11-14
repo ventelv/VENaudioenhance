@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 APP="$ROOT/build/VEN Audio Enhance.app"
 IDENTITY="${VEN_SIGN_IDENTITY:--}"   # set to a Keychain certificate name for a stable signature
+VERSION="1.0.1"
 
 cd "$ROOT"
 swift build -c release 2>&1 | grep -v "xcrun: error\|could not determine XCTest" || true
@@ -46,7 +47,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleDisplayName</key><string>VEN Audio Enhance</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
-	<key>CFBundleShortVersionString</key><string>1.0</string>
+	<key>CFBundleShortVersionString</key><string>$VERSION</string>
 	<key>CFBundleVersion</key><string>$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)</string>
 	<key>LSMinimumSystemVersion</key><string>13.0</string>
 	<key>LSUIElement</key><true/>

@@ -17,6 +17,8 @@ Get **VEN-Audio-Enhance.zip** from the [latest release](https://github.com/vente
 2. Open it. macOS says it can't verify the app, because it isn't signed with a paid Apple Developer ID. Click **Done**, then go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. You only do this once.
 3. Allow the microphone when asked, then click **Install VEN Enhanced Mic** in the menu bar panel.
 
+To remove it, click **Uninstall…** under **Mastering & Settings → Setup**, then move the app to the Trash.
+
 To check the zip, compare its SHA-256 with the one in the release notes ([SECURITY.md](SECURITY.md) shows how). If you'd rather not trust a download at all, build it from source instead (see Building below).
 
 ## Using it

@@ -132,12 +132,14 @@ final class SystemSupport: ObservableObject {
             return
         }
         // The bundle's path goes in as an AppleScript string, quoted for the shell by `quoted form of`, so no
-        // folder name can turn into a command run as root.
+        // folder name can turn into a command run as root. A downloaded app's files carry the quarantine mark,
+        // which cp keeps; the audio service may refuse a quarantined plug-in, so it's cleared on the copy.
         let source = driver.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         let script = """
             set src to "\(source)"
             set dest to "/Library/Audio/Plug-Ins/HAL/VENMic.driver"
             do shell script "rm -rf " & quoted form of dest & " && cp -R " & quoted form of src & " " & quoted form of dest & ¬
+                " && xattr -dr com.apple.quarantine " & quoted form of dest & ¬
                 " && chown -R root:wheel " & quoted form of dest & " && killall coreaudiod" ¬
                 with prompt "VEN Audio Enhance wants to install the VEN Enhanced Mic audio driver." with administrator privileges
             """
@@ -147,6 +149,21 @@ final class SystemSupport: ObservableObject {
             installMessage = (error[NSAppleScript.errorMessage] as? String) ?? "Install was cancelled."
         } else {
             installMessage = "Installed. VEN Enhanced Mic is now available in every app."
+        }
+    }
+
+    /// Removes VEN Enhanced Mic from CoreAudio, asking for the admin password.
+    func uninstallDriver() {
+        let script = """
+            do shell script "rm -rf '/Library/Audio/Plug-Ins/HAL/VENMic.driver' && killall coreaudiod" ¬
+                with prompt "VEN Audio Enhance wants to remove the VEN Enhanced Mic audio driver." with administrator privileges
+            """
+        var error: NSDictionary?
+        NSAppleScript(source: script)?.executeAndReturnError(&error)
+        if let error {
+            installMessage = (error[NSAppleScript.errorMessage] as? String) ?? "Uninstall was cancelled."
+        } else {
+            installMessage = "Removed. To remove the app too, move it from Applications to the Trash."
         }
     }
 }

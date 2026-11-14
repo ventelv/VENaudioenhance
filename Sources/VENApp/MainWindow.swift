@@ -467,10 +467,11 @@ struct SetupTab: View {
                     Text(live.status == .driverMissing ? "VEN Enhanced Mic is not installed" : "VEN Enhanced Mic is installed")
                     Spacer()
                     Button(live.status == .driverMissing ? "Install…" : "Reinstall…") { system.installDriver() }
+                    if live.status != .driverMissing {
+                        Button("Uninstall…") { system.uninstallDriver() }
+                    }
                 }
                 if let msg = system.installMessage { Text(msg).font(.caption).foregroundStyle(.secondary) }
-                Text("To remove it later: run scripts/uninstall-driver.sh from the project folder.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("General") {
                 Toggle("Open at login", isOn: Binding(get: { system.launchAtLogin }, set: { system.setLaunchAtLogin($0) }))

@@ -19,7 +19,7 @@ There is no analytics, no telemetry, no account, and no cloud processing. Audio 
 - **Hardened Runtime.** The app and `ven-cli` are signed with Apple's Hardened Runtime, so another program can't inject code into them (for example with `DYLD_INSERT_LIBRARIES`) to borrow their microphone permission. The only entitlement is microphone input, plus permission to load the self-built DeepFilterNet library when you've added it.
 - **Code loading.** The app loads its optional DeepFilterNet library only from inside its own bundle, never from a folder other programs can write to.
 - **Driver.** The virtual mic is a small C plug-in (`Driver/VENMic/VENMic.c`) that runs inside macOS's audio service. It checks the size of every property request and keeps all audio copies inside its own buffer. It has no network or file access. Any app can play audio into its output side, the same as BlackHole or Loopback, so only use apps you trust while recording.
-- **Installer.** The install command passes the app's location through AppleScript's `quoted form of`, so no folder name can be turned into a command that runs as root.
+- **Installer.** The install command passes the app's location through AppleScript's `quoted form of`, so no folder name can be turned into a command that runs as root. It clears macOS's download quarantine mark only on the installed copy of the driver, which you've just approved with your password.
 - **Downloads.** Speech models come from a fixed revision of `huggingface.co/ggerganov/whisper.cpp` over HTTPS, and each file must match its published SHA-256 before it's kept.
 - **External programs.** `whisper-cli` and `lame` are run from fixed Homebrew paths with argument lists. Nothing goes through a shell.
 - **Third-party code.** RNNoise is vendored in `Sources/CRNNoise` (BSD licence, see its `COPYING`). DeepFilterNet is built from a pinned commit with `cargo --locked`, so its dependencies are exactly the ones in its `Cargo.lock`.
@@ -40,13 +40,7 @@ Release builds are signed ad hoc, not with a paid Apple Developer ID, and they a
 shasum -a 256 VEN-Audio-Enhance.zip
 ```
 
-To remove everything:
-
-```bash
-scripts/uninstall-driver.sh
-```
-
-Then delete the app, and optionally `~/Library/Application Support/VENWhispr` (speech models).
+To remove everything: open **Mastering & Settings → Setup** and click **Uninstall…** next to VEN Enhanced Mic (it asks for your admin password), then move the app to the Trash. Speech models, if you downloaded any, are in `~/Library/Application Support/VENWhispr`. From the source folder, `scripts/uninstall-driver.sh` does the same as the button.
 
 ## Reporting a problem
 
