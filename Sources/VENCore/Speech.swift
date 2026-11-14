@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 
 /// A whisper.cpp model that VEN knows how to download and how to get word timings from.
@@ -8,15 +9,23 @@ public struct WhisperModel: Identifiable, Hashable {
     public let sizeMB: Int
     public let dtwPreset: String   // whisper.cpp alignment-heads preset for accurate word timing
     public let englishOnly: Bool
+    /// SHA-256 of the file at `revision`; a download that doesn't match is thrown away.
+    public let sha256: String
 
+    /// The revision of huggingface.co/ggerganov/whisper.cpp the checksums belong to.
+    static let revision = "5359861c739e955e79d9a303bcbc70fb988958b1"
     public var fileName: String { "ggml-\(id).bin" }
-    public var downloadURL: URL { URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(fileName)")! }
+    public var downloadURL: URL { URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/\(Self.revision)/\(fileName)")! }
 
     public static let catalog: [WhisperModel] = [
-        WhisperModel(id: "large-v3-turbo-q5_0", name: "Large v3 Turbo (compact)", sizeMB: 547, dtwPreset: "large.v3.turbo", englishOnly: false),
-        WhisperModel(id: "large-v3-turbo", name: "Large v3 Turbo", sizeMB: 1624, dtwPreset: "large.v3.turbo", englishOnly: false),
-        WhisperModel(id: "small.en", name: "Small (English)", sizeMB: 466, dtwPreset: "small.en", englishOnly: true),
-        WhisperModel(id: "base.en", name: "Base (English, fastest)", sizeMB: 142, dtwPreset: "base.en", englishOnly: true),
+        WhisperModel(id: "large-v3-turbo-q5_0", name: "Large v3 Turbo (compact)", sizeMB: 547, dtwPreset: "large.v3.turbo", englishOnly: false,
+                     sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"),
+        WhisperModel(id: "large-v3-turbo", name: "Large v3 Turbo", sizeMB: 1624, dtwPreset: "large.v3.turbo", englishOnly: false,
+                     sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"),
+        WhisperModel(id: "small.en", name: "Small (English)", sizeMB: 466, dtwPreset: "small.en", englishOnly: true,
+                     sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d"),
+        WhisperModel(id: "base.en", name: "Base (English, fastest)", sizeMB: 142, dtwPreset: "base.en", englishOnly: true,
+                     sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"),
     ]
 
     /// Guesses the alignment preset from a model file name, for model files VEN didn't download.
@@ -67,6 +76,9 @@ public final class SpeechModels: ObservableObject {
         let task = URLSession.shared.downloadTask(with: model.downloadURL) { [weak self] temp, response, error in
             var failure = error?.localizedDescription
             if failure == nil, let http = response as? HTTPURLResponse, http.statusCode != 200 { failure = "Server returned \(http.statusCode)" }
+            if failure == nil, let temp, Speech.sha256(of: temp) != model.sha256 {
+                failure = "The download didn't match the expected checksum, so it was discarded"
+            }
             if failure == nil, let temp {
                 do {
                     try FileManager.default.createDirectory(at: Speech.modelsFolder, withIntermediateDirectories: true)
@@ -103,6 +115,15 @@ public final class SpeechModels: ObservableObject {
 }
 
 public enum Speech {
+    /// Hex SHA-256 of a file, read in 4 MB pieces (models are up to 1.6 GB).
+    static func sha256(of url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hash = SHA256()
+        while let chunk = try? handle.read(upToCount: 4 << 20), !chunk.isEmpty { hash.update(data: chunk) }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     public static var modelsFolder: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("VEN Audio Enhance/Models")

@@ -22,20 +22,22 @@ public enum StudioDenoiser {
         let liveAtten: ven_denoise_atten_fn?
     }
 
-    /// Where libdf.dylib and DeepFilterNet3_onnx.tar.gz are looked for: inside the app, then the build folder.
+    /// Where libdf.dylib and DeepFilterNet3_onnx.tar.gz are looked for. Inside the app only its own (signed)
+    /// Resources folder counts: a library loaded from a folder other programs can write to would run with the
+    /// app's microphone permission. ven-cli run from the project also looks in build/deps/out.
     static var searchFolders: [URL] {
-        var folders: [URL] = []
-        if let resources = Bundle.main.resourceURL { folders.append(resources.appendingPathComponent("DeepFilterNet")) }
         let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
-        folders.append(exe.deletingLastPathComponent().appendingPathComponent("Resources/DeepFilterNet"))   // ven-cli inside the app
+        if let app = exe.pathComponents.lastIndex(where: { $0.hasSuffix(".app") }) {
+            let bundle = NSURL.fileURL(withPathComponents: Array(exe.pathComponents[...app]))!
+            return [bundle.appendingPathComponent("Contents/Resources/DeepFilterNet")]
+        }
         // Running from the project (e.g. .build/arm64-apple-macosx/release/ven-cli): build/deps/out above it.
+        var folders: [URL] = []
         var dir = exe
         for _ in 0..<5 {
             dir = dir.deletingLastPathComponent()
             folders.append(dir.appendingPathComponent("build/deps/out"))
         }
-        folders.append(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("VEN Audio Enhance/DeepFilterNet"))
         return folders
     }
 

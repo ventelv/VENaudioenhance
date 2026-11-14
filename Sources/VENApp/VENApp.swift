@@ -131,9 +131,16 @@ final class SystemSupport: ObservableObject {
             installMessage = "The driver isn't inside this app bundle. Run scripts/install-driver.sh instead."
             return
         }
-        let dest = "/Library/Audio/Plug-Ins/HAL/VENMic.driver"
-        let shell = "rm -rf '\(dest)' && cp -R '\(driver.path)' '\(dest)' && chown -R root:wheel '\(dest)' && killall coreaudiod"
-        let script = "do shell script \"\(shell)\" with prompt \"VEN Audio Enhance wants to install the VEN Enhanced Mic audio driver.\" with administrator privileges"
+        // The bundle's path goes in as an AppleScript string, quoted for the shell by `quoted form of`, so no
+        // folder name can turn into a command run as root.
+        let source = driver.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+            set src to "\(source)"
+            set dest to "/Library/Audio/Plug-Ins/HAL/VENMic.driver"
+            do shell script "rm -rf " & quoted form of dest & " && cp -R " & quoted form of src & " " & quoted form of dest & ¬
+                " && chown -R root:wheel " & quoted form of dest & " && killall coreaudiod" ¬
+                with prompt "VEN Audio Enhance wants to install the VEN Enhanced Mic audio driver." with administrator privileges
+            """
         var error: NSDictionary?
         NSAppleScript(source: script)?.executeAndReturnError(&error)
         if let error {

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened Runtime blocks the microphone unless it's asked for here. -->
+	<key>com.apple.security.device.audio-input</key><true/>
+	<!-- With the Studio engine bundled: libdf.dylib is signed on this Mac, not by a registered developer, so
+	     library validation would refuse it. The app only loads it from its own Resources folder, and the
+	     Hardened Runtime still refuses injected libraries (DYLD_* variables) and debugger attach. -->
+	<key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict>
+</plist>

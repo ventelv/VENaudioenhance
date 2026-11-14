@@ -7,6 +7,8 @@ A free, native macOS app that does what Auphonic does, locally:
 - **Production:** multitrack sessions (one mic per person, crossgated so voices don't bleed, music ducked under speech), intro/outro music, chapter marks, and video files with the cleaned audio put back in.
 - **Smart cutting and transcripts:** removes "um"/"uh", coughs and long pauses (you can review each cut first), and writes SRT/VTT/TXT/JSON transcripts. Speech recognition runs locally with whisper.cpp.
 
+Everything runs on your Mac: no account, no telemetry, and audio never leaves the computer. See [SECURITY.md](SECURITY.md) for what the app can access and how to check a download.
+
 ## Using it
 
 1. Open **VEN Audio Enhance** from Applications. A waveform icon appears in the menu bar.

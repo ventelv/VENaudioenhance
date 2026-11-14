@@ -16,6 +16,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/VENApp "$APP/Contents/MacOS/VEN Audio Enhance"
 cp .build/release/ven-cli "$APP/Contents/MacOS/ven-cli"
 cp -R build/VENMic.driver "$APP/Contents/Resources/"
+# App icon, drawn by scripts/make-icon.swift.
+ICONSET="$ROOT/build/AppIcon.iconset"
+rm -rf "$ICONSET" && mkdir -p "$ICONSET"
+for px in 16 32 128 256 512; do
+  sips -z $px $px Resources/icon-1024.png --out "$ICONSET/icon_${px}x${px}.png" >/dev/null
+  sips -z $((px * 2)) $((px * 2)) Resources/icon-1024.png --out "$ICONSET/icon_${px}x${px}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 # Studio noise engine, if scripts/build-deepfilter.sh has been run.
 if [[ -f build/deps/out/libdf.dylib ]]; then
   mkdir -p "$APP/Contents/Resources/DeepFilterNet"
@@ -31,6 +39,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleName</key><string>VEN Audio Enhance</string>
 	<key>CFBundleDisplayName</key><string>VEN Audio Enhance</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
+	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundleShortVersionString</key><string>1.0</string>
 	<key>CFBundleVersion</key><string>$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)</string>
 	<key>LSMinimumSystemVersion</key><string>13.0</string>
@@ -51,9 +60,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 codesign --force --sign "$IDENTITY" "$APP/Contents/Resources/VENMic.driver"
-codesign --force --sign "$IDENTITY" "$APP/Contents/MacOS/ven-cli"
+# Hardened Runtime: no injected libraries or debugger attach, so nothing can borrow the app's mic permission.
+ENTITLEMENTS="$ROOT/Resources/VENApp.entitlements"
+[[ -f "$APP/Contents/Resources/DeepFilterNet/libdf.dylib" ]] && ENTITLEMENTS="$ROOT/Resources/VENApp-studio.entitlements"
+RUNTIME=(--options runtime --entitlements "$ENTITLEMENTS")
 [[ -f "$APP/Contents/Resources/DeepFilterNet/libdf.dylib" ]] && codesign --force --sign "$IDENTITY" "$APP/Contents/Resources/DeepFilterNet/libdf.dylib"
-codesign --force --sign "$IDENTITY" "$APP"
+codesign --force --sign "$IDENTITY" "${RUNTIME[@]}" "$APP/Contents/MacOS/ven-cli"
+codesign --force --sign "$IDENTITY" "${RUNTIME[@]}" "$APP"
 echo "Built $APP"
 
 if [[ "${1:-}" != "--no-install" ]]; then
