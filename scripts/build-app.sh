@@ -16,6 +16,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/VENApp "$APP/Contents/MacOS/VEN Audio Enhance"
 cp .build/release/ven-cli "$APP/Contents/MacOS/ven-cli"
 cp -R build/VENMic.driver "$APP/Contents/Resources/"
+# Licence notices for everything inside the app.
+mkdir -p "$APP/Contents/Resources/Licenses"
+cp LICENSE "$APP/Contents/Resources/Licenses/VEN Audio Enhance.txt"
+cp Sources/CRNNoise/COPYING "$APP/Contents/Resources/Licenses/RNNoise.txt"
 # App icon, drawn by scripts/make-icon.swift.
 ICONSET="$ROOT/build/AppIcon.iconset"
 rm -rf "$ICONSET" && mkdir -p "$ICONSET"
@@ -28,6 +32,8 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 if [[ -f build/deps/out/libdf.dylib ]]; then
   mkdir -p "$APP/Contents/Resources/DeepFilterNet"
   cp build/deps/out/libdf.dylib build/deps/out/DeepFilterNet3_onnx.tar.gz "$APP/Contents/Resources/DeepFilterNet/"
+  cp build/deps/DeepFilterNet/LICENSE-MIT "$APP/Contents/Resources/Licenses/DeepFilterNet (MIT).txt"
+  cp build/deps/DeepFilterNet/LICENSE-APACHE "$APP/Contents/Resources/Licenses/DeepFilterNet (Apache-2.0).txt"
 fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

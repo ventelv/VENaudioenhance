@@ -9,6 +9,16 @@ A free, native macOS app that does what Auphonic does, locally:
 
 Everything runs on your Mac: no account, no telemetry, and audio never leaves the computer. See [SECURITY.md](SECURITY.md) for what the app can access and how to check a download.
 
+## Download
+
+Get **VEN-Audio-Enhance.zip** from the [latest release](https://github.com/ventelv/VENaudioenhance/releases/latest). It needs a Mac with Apple silicon (M1 or later) and macOS 13 or later.
+
+1. Unzip it and drag **VEN Audio Enhance** into Applications.
+2. Open it. macOS says it can't verify the app, because it isn't signed with a paid Apple Developer ID. Click **Done**, then go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. You only do this once.
+3. Allow the microphone when asked, then click **Install VEN Enhanced Mic** in the menu bar panel.
+
+To check the zip, compare its SHA-256 with the one in the release notes ([SECURITY.md](SECURITY.md) shows how). If you'd rather not trust a download at all, build it from source instead (see Building below).
+
 ## Using it
 
 1. Open **VEN Audio Enhance** from Applications. A waveform icon appears in the menu bar.

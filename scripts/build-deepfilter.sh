@@ -16,6 +16,8 @@ git -C "$SRC" checkout -q "$COMMIT"
 [[ "$(git -C "$SRC" rev-parse HEAD)" == "$COMMIT" ]] || { echo "DeepFilterNet isn't at $COMMIT" >&2; exit 1; }
 
 cd "$SRC"
+# Keep this Mac's paths (and user name) out of the library's panic messages.
+export RUSTFLAGS="--remap-path-prefix=$HOME=/build --remap-path-prefix=$SRC=/build/DeepFilterNet"
 cargo build --release --locked -p deep_filter --no-default-features --features capi
 mkdir -p "$OUT"
 cp target/release/libdf.dylib "$OUT/"
