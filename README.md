@@ -106,3 +106,7 @@ scripts/uninstall-driver.sh   # remove the virtual mic
 
 - Lower live delay for the Studio engine (its 30 ms look-ahead, plus a 20–30 ms safety buffer).
 - MP3 chapter markers (ID3 CHAP).
+
+## License
+
+MIT, see [LICENSE](LICENSE). RNNoise (in `Sources/CRNNoise`) keeps its own BSD licence, and DeepFilterNet, built separately by `scripts/build-deepfilter.sh`, is MIT/Apache-2.0.
