@@ -78,7 +78,8 @@ high-pass → hum notches (50/60 Hz auto-detected, up to 16 harmonics) → RNNoi
 ## Building (Command Line Tools only, no Xcode needed)
 
 ```bash
-scripts/build-app.sh          # builds, signs ad-hoc, installs to /Applications
+scripts/make-signing-cert.sh  # once: a local signing certificate, so macOS remembers the mic permission
+scripts/build-app.sh          # builds, signs, installs to /Applications
 scripts/install-driver.sh     # (re)install just the virtual mic driver
 scripts/uninstall-driver.sh   # remove the virtual mic
 ```

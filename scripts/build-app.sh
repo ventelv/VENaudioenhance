@@ -5,7 +5,16 @@
 set -euo pipefail
 ROOT="${0:A:h:h}"
 APP="$ROOT/build/VEN Audio Enhance.app"
-IDENTITY="${VEN_SIGN_IDENTITY:--}"   # set to a Keychain certificate name for a stable signature
+# Signing identity: VEN_SIGN_IDENTITY if set, else the "VEN Local Signing" certificate made by
+# scripts/make-signing-cert.sh, else ad hoc. With a certificate, macOS keeps the microphone permission
+# across rebuilds; ad hoc, every build is a new app to it and asks again.
+if [[ -n "${VEN_SIGN_IDENTITY:-}" ]]; then
+  IDENTITY="$VEN_SIGN_IDENTITY"
+elif security find-identity -p codesigning 2>/dev/null | grep -q '"VEN Local Signing"'; then
+  IDENTITY="VEN Local Signing"
+else
+  IDENTITY="-"
+fi
 VERSION="1.0.1"
 
 cd "$ROOT"
@@ -74,7 +83,7 @@ RUNTIME=(--options runtime --entitlements "$ENTITLEMENTS")
 [[ -f "$APP/Contents/Resources/DeepFilterNet/libdf.dylib" ]] && codesign --force --sign "$IDENTITY" "$APP/Contents/Resources/DeepFilterNet/libdf.dylib"
 codesign --force --sign "$IDENTITY" "${RUNTIME[@]}" "$APP/Contents/MacOS/ven-cli"
 codesign --force --sign "$IDENTITY" "${RUNTIME[@]}" "$APP"
-echo "Built $APP"
+echo "Built $APP (signed: ${IDENTITY/#-/ad hoc})"
 
 if [[ "${1:-}" != "--no-install" ]]; then
   DEST=/Applications
